@@ -1,0 +1,29 @@
+# macOS / IDE
+.DS_Store
+.idea/
+*.iml
+
+# Local analysis and vendor delivery files
+Codex_Advice/
+Viaim智能耳机_Android_v1/
+Viaim智能耳机_Android_v1_fixed/
+
+# Android local configuration and build outputs
+android/.gradle/
+android/local.properties
+android/**/build/
+android/**/*.apk
+android/**/*.aab
+
+# The viaim SDK is supplied separately for the competition and is not
+# redistributed from this public repository.
+android/app/libs/*.aar
+!android/app/libs/.gitkeep
+
+# Secrets
+*.jks
+*.keystore
+secrets.properties
+.env
+.env.*
+!.env.example

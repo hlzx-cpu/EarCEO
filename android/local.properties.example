@@ -1,0 +1,4 @@
+# Copy this file to local.properties. Never commit local.properties.
+sdk.dir=/Users/your-name/Library/Android/sdk
+viaim.appKey=
+viaim.appSecret=

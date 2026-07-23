@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">EarCEO</string>
+    <string name="tagline">A voice-first control plane for your agent team</string>
+    <string name="initialize_sdk">Initialize viaim SDK</string>
+    <string name="ready_to_initialize">Ready</string>
+    <string name="credentials_loaded">Local competition credentials are configured. They are not stored in Git.</string>
+    <string name="configuration_required">Local configuration required</string>
+    <string name="configuration_instructions">Add viaim.appKey and viaim.appSecret to android/local.properties. Compilation works without them; headset initialization does not.</string>
+    <string name="initializing">Initializing SDK…</string>
+    <string name="initializing_detail">Validating the local competition credentials with the viaim service.</string>
+    <string name="initialization_succeeded">SDK initialized</string>
+    <string name="initialization_failed">SDK initialization failed</string>
+    <string name="enabled_services">Enabled services: %1$s</string>
+    <string name="no_services_reported">none reported</string>
+    <string name="unknown_error">Unknown error</string>
+</resources>
