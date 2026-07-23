@@ -62,7 +62,7 @@ Copy the example:
 cp android/local.properties.example android/local.properties
 ```
 
-Set `sdk.dir` to the Android SDK path. For compilation only, the credential fields may remain empty. For local headset testing, add credentials issued for the competition:
+Set `sdk.dir` to the Android SDK path. For compilation, SPP connection and PCM-only testing, the credential fields may remain empty. To test realtime transcription, add credentials issued for the competition:
 
 ```properties
 sdk.dir=/Users/your-name/Library/Android/sdk
@@ -72,17 +72,62 @@ viaim.appSecret=
 
 `local.properties` is ignored by Git. The current AppSecret path is for local competition testing only; a production build must use `ClientToken` or `Signed` credentials issued through a trusted backend.
 
+## Check `text-stream` authorization
+
+Look in the viaim AI Open application console for the competition app's enabled
+services or abilities. Search for these names because console wording may vary:
+
+- `text-stream`
+- realtime text stream / 实时文本流
+- ASR
+- enabled service IDs / 已开通服务
+
+If the competition console does not expose this list, send the AppKey (never the
+AppSecret) to the viaim competition support contact and ask whether
+`text-stream` is enabled.
+
+The runtime callback is authoritative. EarCEO displays:
+
+- **已开通** when SDK initialization succeeds and `hasTextStream` is true;
+- **凭证有效但未报告该能力** when initialization succeeds without it;
+- **PCM-only** when no credentials are configured or authorization fails.
+
+Missing `text-stream` affects only partial/final ASR callbacks. It does not block
+Bluetooth pairing, SPP connection, battery queries, or raw 16 kHz mono PCM
+testing. Therefore most hardware debugging can continue before the competition
+permission is confirmed.
+
 ## Build and validate
 
 ```bash
 cd android
-./gradlew :app:assembleDebug
+./gradlew :app:assembleDebug :app:lintDebug
 ../scripts/check-public-repo.sh
 ```
 
-Before a real-device test:
+## OnePlus / ColorOS real-device test
+
+Tested on 2026-07-24 with a OnePlus Ace 3 Pro (PJX110) running ColorOS 16.0.5:
+
+- macOS ADB connection: passed
+- APK installation and launch: passed
+- nearby-device/location permission flow: passed
+- iFLYBUDS Pro 3 SPP connection: passed
+- left/right battery query: passed
+- PCM start: two attempts returned `9999 startLiveRecord timeout`; the second
+  attempt confirmed both earbuds were out of the charging case and all Android
+  permissions were granted, so the remaining investigation is the vendor
+  SDK/earbud-firmware live-record handshake (not macOS, ADB, ColorOS permission,
+  SPP, or `text-stream`)
+
+Real-device procedure:
 
 1. Pair the iFLYBUDS Pro 3 in Android system Bluetooth settings.
-2. Confirm the viaim console has enabled `text-stream`.
-3. Install the debug APK with `adb install -r app/build/outputs/apk/debug/app-debug.apk`.
-4. Start with SDK initialization only; connection, recording and ASR are added in the next milestone.
+2. Enable Developer options and USB debugging, then accept the computer key.
+3. Install with `adb install -r app/build/outputs/apk/debug/app-debug.apk`.
+4. Open EarCEO and allow nearby-device/location access.
+5. Take the earbuds out of the case and wear them.
+6. Tap **连接 iFLYBUDS** and wait for `SPP 已就绪`.
+7. Tap **开始现场录音**, allow microphone access, and speak.
+8. Confirm the PCM frame/byte counters increase. If `text-stream` is enabled,
+   also confirm Partial and Final text appears.

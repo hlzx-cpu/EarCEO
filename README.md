@@ -2,12 +2,14 @@
 
 EarCEO is a voice-first control plane for an AI agent team. A human gives goals and approvals through an iFLYBUDS Pro 3 headset, a CEO agent coordinates work, and specialist agents execute it.
 
-The current milestone is the Android SDK baseline:
+The current milestone is the Android headset probe:
 
 - macOS command-line build with JDK 17 and Android API 35
 - local integration with the viaim `VisionHeadsetOpen-v1.0.0.aar`
 - credentials injected from an untracked `local.properties`
-- a minimal screen that verifies SDK initialization without exposing secrets
+- SPP connection, battery and in-case state on a real iFLYBUDS Pro 3
+- PCM-only recording diagnostics when `text-stream` is not available
+- optional partial/final ASR display when competition credentials enable it
 
 ## Repository safety
 

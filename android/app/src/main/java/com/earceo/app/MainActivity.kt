@@ -1,137 +1,643 @@
 package com.earceo.app
 
+import android.Manifest
+import android.annotation.SuppressLint
 import android.app.Activity
+import android.bluetooth.BluetoothManager
+import android.content.pm.PackageManager
 import android.graphics.Color
+import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import android.view.Gravity
+import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
+import com.vision.headset.open.VHOError
 import com.vision.headset.open.VHOManager
+import com.vision.headset.open.VHOManagerConfig
+import com.vision.headset.open.VHORecordListener
+import com.vision.headset.open.VHORecordType
+import com.vision.headset.open.VHOTextStreamResult
+import com.vision.headset.open.VHOTextStreamResultType
+import com.vision.headset.open.auth.VHOCredentials
 import com.vision.headset.open.auth.VHODeviceVerifyPolicy
+import com.vision.headset.sdk.OnConnectChangeListener
+import com.vision.headset.sdk.OnResultListener
+import com.vision.headset.sdk.entity.PowerEntity
+import com.vision.headset.sdk.entity.RecordDataEntity
+import com.vision.headset.sdk.enums.GaiaConnectStatus
 
+/**
+ * EarCEO Android hardware probe.
+ *
+ * This activity deliberately keeps the vendor integration separate from the
+ * backend agent system. It verifies, in order:
+ * 1. local SDK initialization and optional text-stream authorization;
+ * 2. iFLYBUDS SPP connection;
+ * 3. raw PCM delivery;
+ * 4. optional partial/final ASR callbacks.
+ *
+ * Empty credentials are a supported development mode: connection and PCM can
+ * still be tested while text-stream remains disabled.
+ */
 class MainActivity : Activity() {
 
-    private lateinit var statusText: TextView
-    private lateinit var detailText: TextView
+    private lateinit var sdkStatus: TextView
+    private lateinit var capabilityStatus: TextView
+    private lateinit var headsetStatus: TextView
+    private lateinit var pcmStatus: TextView
+    private lateinit var partialText: TextView
+    private lateinit var transcriptText: TextView
     private lateinit var initializeButton: Button
+    private lateinit var connectButton: Button
+    private lateinit var recordButton: Button
+
+    private val transcript = StringBuilder()
+    private var pendingAfterPermission: (() -> Unit)? = null
+
+    @Volatile private var sdkReady = false
+    @Volatile private var textStreamAvailable = false
+    @Volatile private var headsetReady = false
+    @Volatile private var recording = false
+    @Volatile private var pcmFrames = 0L
+    @Volatile private var pcmBytes = 0L
+
+    private val hasCredentials: Boolean
+        get() = BuildConfig.VIAIM_APP_KEY.isNotBlank() &&
+            BuildConfig.VIAIM_APP_SECRET.isNotBlank()
+
+    private val credentials: VHOCredentials
+        get() = VHOCredentials.AppSecret(
+            BuildConfig.VIAIM_APP_KEY,
+            BuildConfig.VIAIM_APP_SECRET,
+        )
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(createContentView())
-        renderInitialState()
+        setContentView(buildInterface())
+        refreshButtons()
+        initializeSdk()
     }
 
     override fun onDestroy() {
-        VHOManager.release()
+        runCatching {
+            if (recording) VHOManager.stopLiveRecord()
+            VHOManager.setPcmListener(null)
+            VHOManager.setRecordListener(null)
+            VHOManager.release()
+        }
         super.onDestroy()
     }
 
-    private fun createContentView(): LinearLayout {
-        val padding = (24 * resources.displayMetrics.density).toInt()
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray,
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        val granted = grantResults.isNotEmpty() &&
+            grantResults.all { it == PackageManager.PERMISSION_GRANTED }
+        val action = pendingAfterPermission
+        pendingAfterPermission = null
 
-        return LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_HORIZONTAL
-            setPadding(padding, padding, padding, padding)
-
-            addView(TextView(context).apply {
-                text = getString(R.string.app_name)
-                textSize = 30f
-                setTextColor(Color.rgb(25, 32, 46))
-            })
-
-            addView(TextView(context).apply {
-                text = getString(R.string.tagline)
-                textSize = 16f
-                setTextColor(Color.DKGRAY)
-                gravity = Gravity.CENTER
-                setPadding(0, padding / 2, 0, padding)
-            })
-
-            statusText = TextView(context).apply {
-                textSize = 20f
-                setTextColor(Color.rgb(25, 32, 46))
-                gravity = Gravity.CENTER
-            }
-            addView(
-                statusText,
-                LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                ),
+        if (granted) {
+            action?.invoke()
+        } else {
+            toast(
+                when (requestCode) {
+                    REQUEST_BLUETOOTH -> getString(R.string.bluetooth_permission_denied)
+                    REQUEST_MICROPHONE -> getString(R.string.microphone_permission_denied)
+                    else -> getString(R.string.permission_denied)
+                },
             )
-
-            detailText = TextView(context).apply {
-                textSize = 14f
-                setTextColor(Color.DKGRAY)
-                gravity = Gravity.CENTER
-                setPadding(0, padding / 2, 0, padding)
-            }
-            addView(
-                detailText,
-                LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                ),
-            )
-
-            initializeButton = Button(context).apply {
-                text = getString(R.string.initialize_sdk)
-                setOnClickListener { initializeSdk() }
-            }
-            addView(initializeButton)
         }
     }
 
-    private fun renderInitialState() {
-        if (hasLocalCredentials()) {
-            statusText.text = getString(R.string.ready_to_initialize)
-            detailText.text = getString(R.string.credentials_loaded)
-            initializeButton.isEnabled = true
-        } else {
-            statusText.text = getString(R.string.configuration_required)
-            detailText.text = getString(R.string.configuration_instructions)
-            initializeButton.isEnabled = false
+    private fun buildInterface(): View {
+        val scroll = ScrollView(this).apply {
+            setBackgroundColor(Color.rgb(245, 247, 252))
+            isFillViewport = true
         }
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(24), dp(20), dp(40))
+        }
+        scroll.addView(
+            content,
+            ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ),
+        )
+
+        content.addView(text(getString(R.string.app_name), 30f, Color.rgb(21, 31, 55), true))
+        content.addView(
+            text(getString(R.string.tagline), 15f, Color.rgb(85, 98, 126), false).withMargins(
+                bottom = 20,
+            ),
+        )
+
+        sdkStatus = statusCard(getString(R.string.sdk_waiting))
+        capabilityStatus = statusCard(getString(R.string.capability_waiting))
+        headsetStatus = statusCard(getString(R.string.headset_disconnected))
+        pcmStatus = statusCard(getString(R.string.pcm_waiting))
+        content.addView(sdkStatus)
+        content.addView(capabilityStatus)
+        content.addView(headsetStatus)
+        content.addView(pcmStatus)
+
+        initializeButton = actionButton(getString(R.string.initialize_sdk)) { initializeSdk() }
+        connectButton = actionButton(getString(R.string.connect_headset)) { connectHeadset() }
+        recordButton = actionButton(getString(R.string.start_recording)) { toggleRecording() }
+        content.addView(initializeButton.withMargins(top = 12))
+        content.addView(connectButton)
+        content.addView(recordButton)
+        content.addView(actionButton(getString(R.string.clear_transcript)) { clearTranscript() })
+
+        content.addView(sectionTitle(getString(R.string.live_partial)))
+        partialText = text(getString(R.string.no_partial_result), 18f, Color.rgb(68, 83, 118), false)
+            .withPadding(16)
+        partialText.setBackgroundColor(Color.WHITE)
+        content.addView(
+            partialText,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                dp(88),
+            ).apply { bottomMargin = dp(18) },
+        )
+
+        content.addView(sectionTitle(getString(R.string.final_transcript)))
+        transcriptText = text(getString(R.string.no_final_result), 18f, Color.rgb(25, 37, 63), false)
+            .withPadding(16)
+        transcriptText.setBackgroundColor(Color.WHITE)
+        transcriptText.gravity = Gravity.TOP
+        content.addView(
+            transcriptText,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                dp(220),
+            ),
+        )
+        return scroll
     }
 
     private fun initializeSdk() {
-        initializeButton.isEnabled = false
-        statusText.text = getString(R.string.initializing)
-        detailText.text = getString(R.string.initializing_detail)
+        if (recording) return
+        sdkReady = false
+        textStreamAvailable = false
+        sdkStatus.text = getString(R.string.sdk_initializing)
+        capabilityStatus.text = getString(R.string.capability_checking)
+        refreshButtons()
+
+        if (!hasCredentials) {
+            runCatching {
+                VHOManager.init(applicationContext) {
+                    ui {
+                        sdkReady = true
+                        sdkStatus.text = getString(R.string.sdk_ready_pcm_only)
+                        capabilityStatus.text = getString(R.string.text_stream_not_configured)
+                        refreshButtons()
+                    }
+                }
+            }.onFailure { showSdkFailure(it) }
+            return
+        }
 
         runCatching {
             VHOManager.initialize(
-                context = applicationContext,
-                appKey = BuildConfig.VIAIM_APP_KEY,
-                appSecret = BuildConfig.VIAIM_APP_SECRET,
-                deviceVerifyPolicy = VHODeviceVerifyPolicy.Auto,
+                applicationContext,
+                BuildConfig.VIAIM_APP_KEY,
+                BuildConfig.VIAIM_APP_SECRET,
+                VHODeviceVerifyPolicy.Auto,
             ) { success, info, error ->
-                runOnUiThread {
+                ui {
+                    sdkReady = true
+                    textStreamAvailable = success && info?.hasTextStream == true
                     if (success) {
-                        statusText.text = getString(R.string.initialization_succeeded)
+                        sdkStatus.text = getString(R.string.sdk_initialized)
                         val services = info?.enabledServiceIds
                             ?.takeIf { it.isNotEmpty() }
                             ?.joinToString()
                             ?: getString(R.string.no_services_reported)
-                        detailText.text = getString(R.string.enabled_services, services)
+                        capabilityStatus.text = if (textStreamAvailable) {
+                            getString(R.string.text_stream_enabled, services)
+                        } else {
+                            getString(R.string.text_stream_missing, services)
+                        }
                     } else {
-                        statusText.text = getString(R.string.initialization_failed)
-                        detailText.text = error ?: getString(R.string.unknown_error)
-                        initializeButton.isEnabled = true
+                        sdkStatus.text = getString(
+                            R.string.sdk_auth_failed_pcm_available,
+                            error?.toString() ?: getString(R.string.unknown_error),
+                        )
+                        capabilityStatus.text = getString(R.string.text_stream_unavailable)
                     }
+                    refreshButtons()
                 }
             }
-        }.onFailure { throwable ->
-            statusText.text = getString(R.string.initialization_failed)
-            detailText.text = throwable.message ?: getString(R.string.unknown_error)
-            initializeButton.isEnabled = true
+        }.onFailure { showSdkFailure(it) }
+    }
+
+    private fun showSdkFailure(error: Throwable) {
+        Log.e(TAG, "SDK initialization failed", error)
+        ui {
+            // Keep the device path available for another connection attempt.
+            sdkReady = true
+            sdkStatus.text = getString(
+                R.string.sdk_exception_pcm_may_work,
+                error.message ?: error.javaClass.simpleName,
+            )
+            capabilityStatus.text = getString(R.string.text_stream_unavailable)
+            refreshButtons()
         }
     }
 
-    private fun hasLocalCredentials(): Boolean =
-        BuildConfig.VIAIM_APP_KEY.isNotBlank() &&
-            BuildConfig.VIAIM_APP_SECRET.isNotBlank()
+    private fun connectHeadset() {
+        if (!sdkReady) {
+            toast(getString(R.string.initialize_first))
+            return
+        }
+        if (!ensurePermissions(bluetoothPermissions(), REQUEST_BLUETOOTH) { connectHeadset() }) {
+            return
+        }
+        connectHeadsetWithPermission()
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun connectHeadsetWithPermission() {
+        val bluetoothManager = getSystemService(BluetoothManager::class.java)
+        val adapter = bluetoothManager?.adapter
+        if (adapter == null) {
+            headsetStatus.text = getString(R.string.bluetooth_unavailable)
+            return
+        }
+        if (!adapter.isEnabled) {
+            headsetStatus.text = getString(R.string.enable_bluetooth)
+            return
+        }
+        if (VHOManager.isConnectSPP()) {
+            onHeadsetReady(null)
+            return
+        }
+
+        headsetStatus.text = getString(R.string.headset_connecting)
+        refreshButtons()
+
+        val bondedHeadset = runCatching {
+            adapter.bondedDevices.firstOrNull {
+                it.name?.startsWith(HEADSET_NAME_PREFIX, ignoreCase = true) == true
+            }
+        }.getOrNull()
+
+        if (bondedHeadset != null) {
+            Log.i(TAG, "Connecting to bonded headset ${bondedHeadset.name}")
+            VHOManager.connectSPP(bondedHeadset.address, connectListener)
+        } else {
+            Log.i(TAG, "No matching bonded device; starting SDK scan")
+            val started = VHOManager.scanAndConnect(this, connectListener)
+            if (!started) {
+                headsetStatus.text = getString(R.string.headset_scan_failed)
+                refreshButtons()
+            }
+        }
+    }
+
+    private val connectListener = object : OnConnectChangeListener {
+        override fun onConnectChange(
+            targetMac: String?,
+            status: GaiaConnectStatus?,
+            info: String?,
+        ) {
+            Log.i(TAG, "Connection status=$status info=$info")
+            ui {
+                when (status) {
+                    GaiaConnectStatus.CONNECTING ->
+                        headsetStatus.text = getString(R.string.headset_connecting)
+                    GaiaConnectStatus.CONNECTED ->
+                        headsetStatus.text = getString(R.string.headset_connected_preparing)
+                    GaiaConnectStatus.CONNECT_ERROR ->
+                        headsetStatus.text = getString(
+                            R.string.headset_connection_error,
+                            info ?: VHOManager.lastConnectError().orEmpty(),
+                        )
+                    GaiaConnectStatus.DISCONNECTED, GaiaConnectStatus.DISCONNECTING -> {
+                        headsetReady = false
+                        headsetStatus.text = getString(R.string.headset_disconnected)
+                    }
+                    else -> Unit
+                }
+                refreshButtons()
+            }
+        }
+
+        override fun onConnectReady(targetMac: String?) {
+            ui { onHeadsetReady(targetMac) }
+        }
+    }
+
+    private fun onHeadsetReady(targetMac: String?) {
+        headsetReady = true
+        runCatching { VHOManager.initSBC() }
+            .onFailure { Log.w(TAG, "initSBC failed", it) }
+        headsetStatus.text = getString(
+            R.string.headset_ready,
+            targetMac?.takeLast(5) ?: getString(R.string.connected),
+        )
+        refreshButtons()
+        queryPower()
+    }
+
+    private fun queryPower() {
+        VHOManager.getPowerPositionConnectionOnce(object : OnResultListener<PowerEntity> {
+            override fun onResult(data: PowerEntity?) {
+                data ?: return
+                ui {
+                    val placement = when {
+                        data.leftInCase && data.rightInCase ->
+                            getString(R.string.both_earbuds_in_case)
+                        data.leftInCase -> getString(R.string.left_earbud_in_case)
+                        data.rightInCase -> getString(R.string.right_earbud_in_case)
+                        else -> getString(R.string.earbuds_out_of_case)
+                    }
+                    headsetStatus.text = getString(
+                        R.string.headset_ready_with_power,
+                        data.leftPowerValue,
+                        data.rightPowerValue,
+                        placement,
+                    )
+                }
+            }
+
+            override fun onError(code: Int, msg: String?) {
+                Log.w(TAG, "Power query failed: $code $msg")
+            }
+        })
+    }
+
+    private fun toggleRecording() {
+        if (recording) {
+            stopRecording()
+            return
+        }
+        if (!headsetReady && !VHOManager.isConnectSPP()) {
+            toast(getString(R.string.connect_first))
+            return
+        }
+        if (!ensurePermissions(
+                arrayOf(Manifest.permission.RECORD_AUDIO),
+                REQUEST_MICROPHONE,
+            ) { toggleRecording() }
+        ) {
+            return
+        }
+        startRecording()
+    }
+
+    private fun startRecording() {
+        pcmFrames = 0
+        pcmBytes = 0
+        pcmStatus.text = getString(R.string.pcm_listening)
+        partialText.text = getString(R.string.no_partial_result)
+
+        if (textStreamAvailable && hasCredentials) {
+            VHOManager.configure(
+                VHOManagerConfig(
+                    credentials = credentials,
+                    deviceVerifyPolicy = VHODeviceVerifyPolicy.Auto,
+                    pcmSavePath = "${externalCacheDir ?: cacheDir}/earceo-live.pcm",
+                    textStreamEnabled = true,
+                    enableSpeakerChannel = false,
+                ),
+            )
+            VHOManager.setRecordListener(recordListener)
+        } else {
+            // SDK contract: null disables text-stream while retaining PCM capture.
+            VHOManager.configure(null)
+            VHOManager.setRecordListener(null)
+        }
+
+        VHOManager.setPcmListener(object : OnResultListener<RecordDataEntity> {
+            override fun onResult(data: RecordDataEntity?) {
+                data ?: return
+                val size = data.audioData?.size ?: 0
+                pcmFrames += 1
+                pcmBytes += size
+                if (pcmFrames == 1L || pcmFrames % PCM_UI_UPDATE_INTERVAL == 0L || data.isEnd) {
+                    ui {
+                        pcmStatus.text = getString(
+                            R.string.pcm_receiving,
+                            pcmFrames,
+                            pcmBytes,
+                            data.channel,
+                        )
+                    }
+                }
+            }
+
+            override fun onError(code: Int, msg: String?) {
+                ui {
+                    handlePcmFailure(code, msg)
+                }
+            }
+        })
+
+        runCatching {
+            VHOManager.initSBC()
+            VHOManager.startLiveRecord()
+        }.onSuccess {
+            recording = true
+            recordButton.text = getString(R.string.stop_recording)
+            sdkStatus.text = if (textStreamAvailable) {
+                getString(R.string.recording_pcm_and_asr)
+            } else {
+                getString(R.string.recording_pcm_only)
+            }
+            refreshButtons()
+        }.onFailure {
+            Log.e(TAG, "Unable to start live recording", it)
+            pcmStatus.text = getString(
+                R.string.recording_start_failed,
+                it.message ?: it.javaClass.simpleName,
+            )
+            VHOManager.setPcmListener(null)
+        }
+    }
+
+    private fun stopRecording() {
+        runCatching { VHOManager.stopLiveRecord() }
+            .onFailure { Log.w(TAG, "Unable to stop live recording", it) }
+        recording = false
+        VHOManager.setPcmListener(null)
+        VHOManager.setRecordListener(null)
+        partialText.text = getString(R.string.no_partial_result)
+        recordButton.text = getString(R.string.start_recording)
+        sdkStatus.text = getString(R.string.recording_stopped)
+        refreshButtons()
+    }
+
+    private fun handlePcmFailure(code: Int, message: String?) {
+        Log.w(TAG, "PCM failure: $code $message")
+        runCatching { VHOManager.stopLiveRecord() }
+        recording = false
+        VHOManager.setPcmListener(null)
+        VHOManager.setRecordListener(null)
+        pcmStatus.text = getString(R.string.pcm_error, code, message.orEmpty())
+        sdkStatus.text = getString(R.string.recording_stopped_after_error)
+        recordButton.text = getString(R.string.start_recording)
+        refreshButtons()
+    }
+
+    private val recordListener = object : VHORecordListener {
+        override fun onTextStreamStarted(type: VHORecordType) {
+            ui { capabilityStatus.text = getString(R.string.text_stream_running) }
+        }
+
+        override fun onTextStreamResult(result: VHOTextStreamResult) {
+            ui {
+                when (result.type) {
+                    VHOTextStreamResultType.Partial -> partialText.text = result.text
+                    VHOTextStreamResultType.Final -> {
+                        if (result.text.isNotBlank()) {
+                            if (transcript.isNotEmpty()) transcript.append('\n')
+                            transcript.append(result.text)
+                            transcriptText.text = transcript.toString()
+                        }
+                        partialText.text = getString(R.string.no_partial_result)
+                    }
+                    else -> Unit
+                }
+            }
+        }
+
+        override fun onTextStreamEnded(type: VHORecordType, error: VHOError?) {
+            ui {
+                capabilityStatus.text = if (error == null) {
+                    getString(R.string.text_stream_ended)
+                } else {
+                    getString(R.string.text_stream_ended_with_error, error.toString())
+                }
+            }
+        }
+
+        override fun onTextStreamStartFailed(type: VHORecordType, error: VHOError) {
+            ui {
+                textStreamAvailable = false
+                capabilityStatus.text = getString(
+                    R.string.text_stream_failed_pcm_continues,
+                    error.toString(),
+                )
+            }
+        }
+    }
+
+    private fun clearTranscript() {
+        transcript.clear()
+        partialText.text = getString(R.string.no_partial_result)
+        transcriptText.text = getString(R.string.no_final_result)
+    }
+
+    private fun ensurePermissions(
+        permissions: Array<String>,
+        requestCode: Int,
+        afterGranted: () -> Unit,
+    ): Boolean {
+        val missing = permissions.filter {
+            checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED
+        }
+        if (missing.isEmpty()) return true
+        pendingAfterPermission = afterGranted
+        requestPermissions(missing.toTypedArray(), requestCode)
+        return false
+    }
+
+    private fun bluetoothPermissions(): Array<String> {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            arrayOf(
+                Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_CONNECT,
+                Manifest.permission.ACCESS_FINE_LOCATION,
+            )
+        } else {
+            arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+    }
+
+    private fun refreshButtons() {
+        initializeButton.isEnabled = !recording
+        connectButton.isEnabled = sdkReady && !recording
+        recordButton.isEnabled = headsetReady || VHOManager.isConnectSPP()
+    }
+
+    private fun actionButton(label: String, action: () -> Unit): Button {
+        return Button(this).apply {
+            text = label
+            isAllCaps = false
+            textSize = 16f
+            setOnClickListener { action() }
+        }
+    }
+
+    private fun statusCard(initial: String): TextView {
+        return text(initial, 15f, Color.rgb(43, 57, 87), false)
+            .withPadding(14)
+            .withMargins(bottom = 8)
+            .also { it.setBackgroundColor(Color.WHITE) }
+    }
+
+    private fun sectionTitle(label: String): TextView {
+        return text(label, 17f, Color.rgb(21, 31, 55), true).withMargins(top = 18, bottom = 8)
+    }
+
+    private fun text(label: String, size: Float, color: Int, bold: Boolean): TextView {
+        return TextView(this).apply {
+            text = label
+            textSize = size
+            setTextColor(color)
+            if (bold) setTypeface(typeface, android.graphics.Typeface.BOLD)
+        }
+    }
+
+    private fun <T : View> T.withPadding(value: Int): T {
+        setPadding(dp(value), dp(value), dp(value), dp(value))
+        return this
+    }
+
+    private fun <T : View> T.withMargins(
+        top: Int = 0,
+        bottom: Int = 0,
+    ): T {
+        layoutParams = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+        ).apply {
+            topMargin = dp(top)
+            bottomMargin = dp(bottom)
+        }
+        return this
+    }
+
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+
+    private fun ui(block: () -> Unit) {
+        if (isFinishing || isDestroyed) return
+        runOnUiThread {
+            if (!isFinishing && !isDestroyed) block()
+        }
+    }
+
+    private fun toast(message: String) {
+        Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+    }
+
+    companion object {
+        private const val TAG = "EarCEO"
+        private const val HEADSET_NAME_PREFIX = "iFLYBUDS"
+        private const val REQUEST_BLUETOOTH = 1001
+        private const val REQUEST_MICROPHONE = 1002
+        private const val PCM_UI_UPDATE_INTERVAL = 25L
+    }
 }
