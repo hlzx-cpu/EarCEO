@@ -270,6 +270,15 @@ class MainActivity : Activity() {
                 BuildConfig.VIAIM_APP_SECRET,
                 VHODeviceVerifyPolicy.Auto,
             ) { success, info, error ->
+                Log.i(
+                    TAG,
+                    "SDK initialize callback: success=$success, " +
+                        "hasTextStream=${info?.hasTextStream}, " +
+                        "services=${info?.enabledServiceIds.orEmpty()}",
+                )
+                if (!success) {
+                    Log.w(TAG, "SDK authentication failed: $error")
+                }
                 registerDialogLogging()
                 ui {
                     sdkReady = true
@@ -478,6 +487,7 @@ class MainActivity : Activity() {
         startWavRecording()
 
         if (textStreamAvailable && hasCredentials) {
+            Log.i(TAG, "Starting live recording with PCM + text-stream")
             VHOManager.configure(
                 VHOManagerConfig(
                     credentials = credentials,
@@ -489,6 +499,11 @@ class MainActivity : Activity() {
             )
             VHOManager.setRecordListener(recordListener)
         } else {
+            Log.i(
+                TAG,
+                "Starting live recording in PCM-only mode: " +
+                    "hasCredentials=$hasCredentials, textStreamAvailable=$textStreamAvailable",
+            )
             // SDK contract: null disables text-stream while retaining PCM capture.
             VHOManager.configure(null)
             VHOManager.setRecordListener(null)
@@ -574,10 +589,15 @@ class MainActivity : Activity() {
 
     private val recordListener = object : VHORecordListener {
         override fun onTextStreamStarted(type: VHORecordType) {
+            Log.i(TAG, "Text stream started: type=$type")
             ui { capabilityStatus.text = getString(R.string.text_stream_running) }
         }
 
         override fun onTextStreamResult(result: VHOTextStreamResult) {
+            Log.i(
+                TAG,
+                "Text stream result: type=${result.type}, textLength=${result.text.length}",
+            )
             ui {
                 when (result.type) {
                     VHOTextStreamResultType.Partial -> partialText.text = result.text
@@ -595,6 +615,11 @@ class MainActivity : Activity() {
         }
 
         override fun onTextStreamEnded(type: VHORecordType, error: VHOError?) {
+            if (error == null) {
+                Log.i(TAG, "Text stream ended: type=$type")
+            } else {
+                Log.w(TAG, "Text stream ended with error: type=$type, error=$error")
+            }
             ui {
                 capabilityStatus.text = if (error == null) {
                     getString(R.string.text_stream_ended)
@@ -605,6 +630,7 @@ class MainActivity : Activity() {
         }
 
         override fun onTextStreamStartFailed(type: VHORecordType, error: VHOError) {
+            Log.w(TAG, "Text stream start failed: type=$type, error=$error")
             ui {
                 textStreamAvailable = false
                 capabilityStatus.text = getString(

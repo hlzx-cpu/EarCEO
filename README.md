@@ -10,7 +10,7 @@ The current milestone is the Android headset probe:
 - SPP connection, battery and in-case state on a real iFLYBUDS Pro 3
 - PCM-only recording diagnostics when `text-stream` is not available
 - background WAV capture and user-selected export for validating recorded speech
-- optional partial/final ASR display when competition credentials enable it
+- authenticated `text-stream` with live Partial and Final ASR display
 
 ## Repository safety
 

@@ -129,10 +129,16 @@ API 31 through its Android compatibility layer:
 - microphone, nearby-device and location permissions: passed
 - iFLYBUDS Pro 3 SPP, battery and out-of-case state: passed
 - PCM live recording: passed without credentials or `text-stream`
+- authenticated SDK initialization: passed; platform reported `voice-stream`
+  and `text-stream`
+- live `text-stream`: start, Partial results, Final results and clean end passed
+- simultaneous PCM, WAV and text-stream capture: passed
 - captured format: signed 16-bit little-endian PCM, 16 kHz, mono
 - WAV finalization and ADB export: passed
 - inspected sample: 69.024 seconds, 2,208,812 bytes, mean volume -25.7 dB,
   peak volume -2.1 dB
+- text-stream sample: 12.2-second WAV, 391,212 bytes, with multiple Partial and
+  Final callbacks and no live-record or text-stream error
 
 This A/B result strongly points to a OnePlus / ColorOS compatibility issue for
 the earlier `startLiveRecord timeout`, rather than a general earbud, firmware,
