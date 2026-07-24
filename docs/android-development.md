@@ -120,6 +120,44 @@ Tested on 2026-07-24 with a OnePlus Ace 3 Pro (PJX110) running ColorOS 16.0.5:
   SDK/earbud-firmware live-record handshake (not macOS, ADB, ColorOS permission,
   SPP, or `text-stream`)
 
+## Huawei Mate 60 real-device test
+
+Tested on 2026-07-24 with a Huawei Mate 60 (`BRA-AL00`) reporting Android 12 /
+API 31 through its Android compatibility layer:
+
+- macOS ADB connection, APK installation and launch: passed
+- microphone, nearby-device and location permissions: passed
+- iFLYBUDS Pro 3 SPP, battery and out-of-case state: passed
+- PCM live recording: passed without credentials or `text-stream`
+- captured format: signed 16-bit little-endian PCM, 16 kHz, mono
+- WAV finalization and ADB export: passed
+- inspected sample: 69.024 seconds, 2,208,812 bytes, mean volume -25.7 dB,
+  peak volume -2.1 dB
+
+This A/B result strongly points to a OnePlus / ColorOS compatibility issue for
+the earlier `startLiveRecord timeout`, rather than a general earbud, firmware,
+SPP or PCM credential requirement.
+
+## Export and inspect a PCM-only recording
+
+After stopping a live recording, EarCEO displays the WAV filename, duration and
+size. Tap **导出最近录音 WAV**, choose a user-visible location such as
+**下载**, and confirm the save operation.
+
+For development inspection over ADB, list the app cache and pull the selected
+file:
+
+```bash
+adb shell ls -l /sdcard/Android/data/com.earceo.app/cache
+adb pull \
+  /sdcard/Android/data/com.earceo.app/cache/earceo-YYYYMMDD-HHMMSS.wav \
+  ./earceo-test.wav
+```
+
+The exported file should report `pcm_s16le`, 16 kHz and one channel. Listening
+to this WAV is the evidence that the received PCM contains intelligible speech;
+frame and byte counters alone prove transport but not speech quality.
+
 Real-device procedure:
 
 1. Pair the iFLYBUDS Pro 3 in Android system Bluetooth settings.
@@ -129,5 +167,6 @@ Real-device procedure:
 5. Take the earbuds out of the case and wear them.
 6. Tap **连接 iFLYBUDS** and wait for `SPP 已就绪`.
 7. Tap **开始现场录音**, allow microphone access, and speak.
-8. Confirm the PCM frame/byte counters increase. If `text-stream` is enabled,
+8. Stop recording, export the WAV and listen to it.
+9. Confirm the PCM frame/byte counters increase. If `text-stream` is enabled,
    also confirm Partial and Final text appears.

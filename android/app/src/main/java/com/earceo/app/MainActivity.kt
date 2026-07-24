@@ -4,6 +4,7 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.bluetooth.BluetoothManager
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.os.Build
@@ -27,10 +28,16 @@ import com.vision.headset.open.VHOTextStreamResultType
 import com.vision.headset.open.auth.VHOCredentials
 import com.vision.headset.open.auth.VHODeviceVerifyPolicy
 import com.vision.headset.sdk.OnConnectChangeListener
+import com.vision.headset.sdk.OnDialogListener
 import com.vision.headset.sdk.OnResultListener
 import com.vision.headset.sdk.entity.PowerEntity
 import com.vision.headset.sdk.entity.RecordDataEntity
 import com.vision.headset.sdk.enums.GaiaConnectStatus
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.concurrent.Executors
 
 /**
  * EarCEO Android hardware probe.
@@ -51,19 +58,26 @@ class MainActivity : Activity() {
     private lateinit var capabilityStatus: TextView
     private lateinit var headsetStatus: TextView
     private lateinit var pcmStatus: TextView
+    private lateinit var recordingFileStatus: TextView
     private lateinit var partialText: TextView
     private lateinit var transcriptText: TextView
     private lateinit var initializeButton: Button
     private lateinit var connectButton: Button
     private lateinit var recordButton: Button
+    private lateinit var exportRecordingButton: Button
 
     private val transcript = StringBuilder()
+    private val audioFileExecutor = Executors.newSingleThreadExecutor()
     private var pendingAfterPermission: (() -> Unit)? = null
+    private var activeWavRecorder: WavRecorder? = null
+    private var latestWavFile: File? = null
+    private var pendingExportFile: File? = null
 
     @Volatile private var sdkReady = false
     @Volatile private var textStreamAvailable = false
     @Volatile private var headsetReady = false
     @Volatile private var recording = false
+    @Volatile private var wavFinalizing = false
     @Volatile private var pcmFrames = 0L
     @Volatile private var pcmBytes = 0L
 
@@ -91,7 +105,41 @@ class MainActivity : Activity() {
             VHOManager.setRecordListener(null)
             VHOManager.release()
         }
+        finishWavRecording(updateUi = false)
+        audioFileExecutor.shutdown()
         super.onDestroy()
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != REQUEST_EXPORT_WAV) return
+
+        val source = pendingExportFile
+        pendingExportFile = null
+        val destination = data?.data
+        if (resultCode != RESULT_OK || source == null || destination == null) return
+
+        audioFileExecutor.execute {
+            val error = runCatching {
+                contentResolver.openOutputStream(destination, "w")?.use { output ->
+                    source.inputStream().buffered().use { input -> input.copyTo(output) }
+                } ?: error("Unable to open the selected destination")
+            }.exceptionOrNull()
+
+            ui {
+                if (error == null) {
+                    toast(getString(R.string.recording_exported))
+                } else {
+                    Log.e(TAG, "Unable to export WAV", error)
+                    toast(
+                        getString(
+                            R.string.recording_export_failed,
+                            error.message ?: error.javaClass.simpleName,
+                        ),
+                    )
+                }
+            }
+        }
     }
 
     override fun onRequestPermissionsResult(
@@ -146,17 +194,23 @@ class MainActivity : Activity() {
         capabilityStatus = statusCard(getString(R.string.capability_waiting))
         headsetStatus = statusCard(getString(R.string.headset_disconnected))
         pcmStatus = statusCard(getString(R.string.pcm_waiting))
+        recordingFileStatus = statusCard(getString(R.string.recording_file_waiting))
         content.addView(sdkStatus)
         content.addView(capabilityStatus)
         content.addView(headsetStatus)
         content.addView(pcmStatus)
+        content.addView(recordingFileStatus)
 
         initializeButton = actionButton(getString(R.string.initialize_sdk)) { initializeSdk() }
         connectButton = actionButton(getString(R.string.connect_headset)) { connectHeadset() }
         recordButton = actionButton(getString(R.string.start_recording)) { toggleRecording() }
+        exportRecordingButton = actionButton(getString(R.string.export_recording)) {
+            exportLatestRecording()
+        }
         content.addView(initializeButton.withMargins(top = 12))
         content.addView(connectButton)
         content.addView(recordButton)
+        content.addView(exportRecordingButton)
         content.addView(actionButton(getString(R.string.clear_transcript)) { clearTranscript() })
 
         content.addView(sectionTitle(getString(R.string.live_partial)))
@@ -197,6 +251,7 @@ class MainActivity : Activity() {
         if (!hasCredentials) {
             runCatching {
                 VHOManager.init(applicationContext) {
+                    registerDialogLogging()
                     ui {
                         sdkReady = true
                         sdkStatus.text = getString(R.string.sdk_ready_pcm_only)
@@ -215,6 +270,7 @@ class MainActivity : Activity() {
                 BuildConfig.VIAIM_APP_SECRET,
                 VHODeviceVerifyPolicy.Auto,
             ) { success, info, error ->
+                registerDialogLogging()
                 ui {
                     sdkReady = true
                     textStreamAvailable = success && info?.hasTextStream == true
@@ -240,6 +296,23 @@ class MainActivity : Activity() {
                 }
             }
         }.onFailure { showSdkFailure(it) }
+    }
+
+    private fun registerDialogLogging() {
+        VHOManager.registerDialogListener(object : OnDialogListener {
+            override fun onDialogActive() {
+                Log.i(TAG, "Dialog callback: onDialogActive")
+            }
+
+            override fun onDialogNum(dialogNum: String?) {
+                Log.i(TAG, "Dialog callback: onDialogNum=$dialogNum")
+            }
+
+            override fun onDialogInActive() {
+                Log.i(TAG, "Dialog callback: onDialogInActive")
+            }
+        })
+        Log.i(TAG, "Dialog listener registered")
     }
 
     private fun showSdkFailure(error: Throwable) {
@@ -402,6 +475,7 @@ class MainActivity : Activity() {
         pcmBytes = 0
         pcmStatus.text = getString(R.string.pcm_listening)
         partialText.text = getString(R.string.no_partial_result)
+        startWavRecording()
 
         if (textStreamAvailable && hasCredentials) {
             VHOManager.configure(
@@ -423,7 +497,11 @@ class MainActivity : Activity() {
         VHOManager.setPcmListener(object : OnResultListener<RecordDataEntity> {
             override fun onResult(data: RecordDataEntity?) {
                 data ?: return
-                val size = data.audioData?.size ?: 0
+                val audioData = data.audioData
+                val size = audioData?.size ?: 0
+                if (audioData != null && audioData.isNotEmpty()) {
+                    activeWavRecorder?.append(audioData)
+                }
                 pcmFrames += 1
                 pcmBytes += size
                 if (pcmFrames == 1L || pcmFrames % PCM_UI_UPDATE_INTERVAL == 0L || data.isEnd) {
@@ -464,6 +542,7 @@ class MainActivity : Activity() {
                 it.message ?: it.javaClass.simpleName,
             )
             VHOManager.setPcmListener(null)
+            finishWavRecording()
         }
     }
 
@@ -473,6 +552,7 @@ class MainActivity : Activity() {
         recording = false
         VHOManager.setPcmListener(null)
         VHOManager.setRecordListener(null)
+        finishWavRecording()
         partialText.text = getString(R.string.no_partial_result)
         recordButton.text = getString(R.string.start_recording)
         sdkStatus.text = getString(R.string.recording_stopped)
@@ -485,6 +565,7 @@ class MainActivity : Activity() {
         recording = false
         VHOManager.setPcmListener(null)
         VHOManager.setRecordListener(null)
+        finishWavRecording()
         pcmStatus.text = getString(R.string.pcm_error, code, message.orEmpty())
         sdkStatus.text = getString(R.string.recording_stopped_after_error)
         recordButton.text = getString(R.string.start_recording)
@@ -540,6 +621,73 @@ class MainActivity : Activity() {
         transcriptText.text = getString(R.string.no_final_result)
     }
 
+    private fun startWavRecording() {
+        val timestamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
+        val directory = externalCacheDir ?: cacheDir
+        val outputFile = File(directory, "earceo-$timestamp.wav")
+        activeWavRecorder = WavRecorder(outputFile, audioFileExecutor)
+        wavFinalizing = false
+        recordingFileStatus.text = getString(R.string.recording_file_recording, outputFile.name)
+        refreshButtons()
+    }
+
+    private fun finishWavRecording(updateUi: Boolean = true) {
+        val recorder = activeWavRecorder ?: return
+        activeWavRecorder = null
+        wavFinalizing = true
+        if (updateUi && ::recordingFileStatus.isInitialized) {
+            recordingFileStatus.text = getString(R.string.recording_file_finalizing)
+            refreshButtons()
+        }
+
+        recorder.finish { result ->
+            if (!updateUi) return@finish
+            ui {
+                wavFinalizing = false
+                if (result.error == null && result.pcmBytes > 0L) {
+                    latestWavFile = result.file
+                    val seconds = result.pcmBytes.toDouble() / WavRecorder.BYTES_PER_SECOND
+                    recordingFileStatus.text = getString(
+                        R.string.recording_file_ready,
+                        result.file.name,
+                        seconds,
+                        result.file.length(),
+                    )
+                } else {
+                    val detail = result.error?.message ?: getString(R.string.recording_file_empty)
+                    recordingFileStatus.text = getString(R.string.recording_file_failed, detail)
+                }
+                refreshButtons()
+            }
+        }
+    }
+
+    private fun exportLatestRecording() {
+        val file = latestWavFile?.takeIf { it.isFile && it.length() > WAV_HEADER_BYTES }
+        if (file == null) {
+            toast(getString(R.string.no_recording_to_export))
+            return
+        }
+        pendingExportFile = file
+        val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "audio/wav"
+            putExtra(Intent.EXTRA_TITLE, file.name)
+        }
+        runCatching {
+            startActivityForResult(intent, REQUEST_EXPORT_WAV)
+        }.onFailure {
+            pendingExportFile = null
+            Log.e(TAG, "Unable to open WAV export destination", it)
+            toast(
+                getString(
+                    R.string.recording_export_failed,
+                    it.message ?: it.javaClass.simpleName,
+                ),
+            )
+        }
+    }
+
     private fun ensurePermissions(
         permissions: Array<String>,
         requestCode: Int,
@@ -569,7 +717,9 @@ class MainActivity : Activity() {
     private fun refreshButtons() {
         initializeButton.isEnabled = !recording
         connectButton.isEnabled = sdkReady && !recording
-        recordButton.isEnabled = headsetReady || VHOManager.isConnectSPP()
+        recordButton.isEnabled = (headsetReady || VHOManager.isConnectSPP()) && !wavFinalizing
+        exportRecordingButton.isEnabled =
+            latestWavFile?.isFile == true && !recording && !wavFinalizing
     }
 
     private fun actionButton(label: String, action: () -> Unit): Button {
@@ -638,6 +788,8 @@ class MainActivity : Activity() {
         private const val HEADSET_NAME_PREFIX = "iFLYBUDS"
         private const val REQUEST_BLUETOOTH = 1001
         private const val REQUEST_MICROPHONE = 1002
+        private const val REQUEST_EXPORT_WAV = 1003
         private const val PCM_UI_UPDATE_INTERVAL = 25L
+        private const val WAV_HEADER_BYTES = 44L
     }
 }

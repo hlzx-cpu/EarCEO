@@ -6,6 +6,7 @@
     <string name="connect_headset">连接 iFLYBUDS</string>
     <string name="start_recording">开始现场录音</string>
     <string name="stop_recording">停止录音</string>
+    <string name="export_recording">导出最近录音 WAV</string>
     <string name="clear_transcript">清空转写</string>
     <string name="sdk_waiting">SDK：等待初始化</string>
     <string name="sdk_initializing">SDK：正在初始化…</string>
@@ -41,6 +42,15 @@
     <string name="pcm_listening">PCM：已启动，等待首个音频帧…</string>
     <string name="pcm_receiving">PCM：已收到 %1$d 帧 / %2$d 字节 · channel=%3$d</string>
     <string name="pcm_error">PCM：错误 %1$d\n%2$s</string>
+    <string name="recording_file_waiting">录音文件：尚未生成</string>
+    <string name="recording_file_recording">录音文件：正在后台写入 %1$s</string>
+    <string name="recording_file_finalizing">录音文件：正在完成 WAV…</string>
+    <string name="recording_file_ready">录音文件：%1$s · %2$.1f 秒 · %3$d 字节\n点击下方按钮可导出到“下载”等位置</string>
+    <string name="recording_file_failed">录音文件：生成失败\n%1$s</string>
+    <string name="recording_file_empty">没有收到 PCM 数据</string>
+    <string name="no_recording_to_export">尚无可导出的录音，请先完成一次现场录音</string>
+    <string name="recording_exported">WAV 录音已导出</string>
+    <string name="recording_export_failed">WAV 导出失败：%1$s</string>
     <string name="recording_pcm_and_asr">录音中：PCM + text-stream</string>
     <string name="recording_pcm_only">录音中：PCM-only</string>
     <string name="recording_start_failed">录音启动失败\n%1$s</string>
