@@ -5,3 +5,7 @@ viaim.appSecret=
 earceo.backendUrl=http://192.168.1.100:8787
 earceo.apiToken=
 earceo.projectId=adventurex-demo
+# Optional local-only LiveKit development room. Never commit a production or
+# long-lived token; production tokens must be issued by the backend.
+livekit.url=wss://your-livekit-host
+livekit.devToken=

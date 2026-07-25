@@ -57,6 +57,16 @@ android {
                 localProperties.getProperty("earceo.projectId", "adventurex-demo"),
             ),
         )
+        buildConfigField(
+            "String",
+            "LIVEKIT_URL",
+            buildConfigString(localProperties.getProperty("livekit.url", "")),
+        )
+        buildConfigField(
+            "String",
+            "LIVEKIT_TOKEN",
+            buildConfigString(localProperties.getProperty("livekit.devToken", "")),
+        )
     }
 
     buildTypes {
@@ -66,6 +76,8 @@ android {
         release {
             isMinifyEnabled = false
             manifestPlaceholders["usesCleartextTraffic"] = "false"
+            // A local developer room token must never ship in a release APK.
+            buildConfigField("String", "LIVEKIT_TOKEN", "\"\"")
         }
     }
 
@@ -99,5 +111,8 @@ dependencies {
     implementation("io.reactivex.rxjava2:rxandroid:2.1.1")
     implementation("com.google.code.gson:gson:2.10.1")
     implementation("net.java.dev.jna:jna:5.6.0@aar")
+    implementation("androidx.core:core-telecom:1.0.1")
+    implementation("io.livekit:livekit-android:2.27.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     testImplementation("junit:junit:4.13.2")
 }
