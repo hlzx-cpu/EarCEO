@@ -147,6 +147,81 @@ This A/B result strongly points to a OnePlus / ColorOS compatibility issue for
 the earlier `startLiveRecord timeout`, rather than a general earbud, firmware,
 SPP or PCM credential requirement.
 
+### 2026-07-25 recovery-build device evidence
+
+The restart-recovery build was installed on the same Huawei Mate 60:
+
+- authenticated SDK initialization and `text-stream` capability: passed;
+- iFLYBUDS Pro 3 SPP and battery query: passed (approximately 96–98% during
+  the run);
+- simultaneous PCM, background WAV and text-stream Final delivery: passed;
+- reviewed command UI: reached with editable text;
+- application logs continued to record only result length and state, not
+  transcript contents.
+
+The native LAN Gateway acceptance test did **not** pass on the available
+institutional Wi-Fi. The Mac (`30.201.208.154`) and phone
+(`30.201.209.14`) received addresses in the same `/21`, but neither endpoint
+could ping the other. The Mac application firewall was disabled and routing
+selected `en0`, while the Android session request timed out. This is consistent
+with access-point client isolation rather than an EarCEO HTTP or firewall
+failure.
+
+An ADB reverse connection to `127.0.0.1:8787` was then used only as a transport
+diagnostic. Through that USB path the following passed:
+
+- session creation, session query, turn submission and ordered SSE progress;
+- completion rendering and terminal recovery-state clearing;
+- a force-stop/reopen while the turn was `working`;
+- persistence of session ID, turn ID, non-sensitive status and the latest event
+  cursor before the force-stop;
+- startup session reconciliation and a new SSE connection after reopening;
+- eventual completion without resubmitting the turn;
+- cancellation of a second slow-mock turn, with both the backend query and
+  Android UI state reaching `cancelled`;
+- recovery preferences returning to only the stable client session ID after
+  each terminal result.
+
+The temporary ADB reverse rule was removed after testing. These results validate
+the application recovery state machine, but they are not recorded as LAN
+acceptance because the phone traffic travelled over USB.
+
+### 2026-07-25 personal-hotspot LAN acceptance
+
+The Mac and Mate 60 were then moved to another phone's personal hotspot:
+
+- Mac: `10.195.186.160/24`;
+- Mate 60: `10.195.186.219/24`;
+- Mac-to-phone and phone-to-Mac ICMP: 3/3 in both directions;
+- ADB reverse list: empty throughout the acceptance run;
+- Gateway request source: `10.195.186.219`, proving the app used native LAN
+  traffic rather than the USB diagnostic path.
+
+The rebuilt APK connected to iFLYBUDS Pro 3 over SPP and reported both earbuds
+out of the case with 71% left/right battery. SDK authentication and
+`text-stream` capability also remained available.
+
+The slow-mock loop passed:
+
+1. a reviewed safe command produced session creation, turn submission, SSE
+   progress, and a completed result;
+2. before a second restart test, Android preferences contained only the
+   backend session ID, active turn ID, status and a non-empty event cursor;
+3. the app was force-stopped while the turn was still `accepted`;
+4. after reopening, Gateway observed `POST session`, `GET session`, then
+   `GET events`, with no second `POST turn`;
+5. the restored UI continued at 60% and advanced from the saved cursor;
+6. cancellation returned HTTP 200, backend session query and Android UI both
+   reached `cancelled`, and the number of persisted `active_turn_*` keys
+   returned to zero.
+
+Only after that native-LAN mock gate passed, `claude-code` 2.1.118 was tested
+through the Gateway with both the project mapping and subprocess repository
+allow-list restricted to `/private/tmp/earceo-mock-demo-20260725`. The successful
+task created only `CLAUDE_GATE_OK.txt`, containing the requested one-line proof
+plus a trailing newline. The Gateway configuration was returned to `mock` after
+the test. No EarCEO source file was exposed to the Claude subprocess.
+
 ## Export and inspect a PCM-only recording
 
 After stopping a live recording, EarCEO displays the WAV filename, duration and

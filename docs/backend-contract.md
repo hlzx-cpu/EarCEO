@@ -69,6 +69,44 @@ Response:
 
 `client_session_id` makes application restart/resume idempotent.
 
+### Query a session for restart recovery
+
+```http
+GET /v1/sessions/{session_id}
+```
+
+Response:
+
+```json
+{
+  "session_id": "ses_01J...",
+  "status": "ready",
+  "project_id": "adventurex-demo",
+  "turns": [
+    {
+      "turn_id": "turn_01J...",
+      "session_id": "ses_01J...",
+      "project_id": "adventurex-demo",
+      "status": "working",
+      "submitted_at": "2026-07-25T10:00:00Z",
+      "updated_at": "2026-07-25T10:00:03Z"
+    }
+  ]
+}
+```
+
+The public turn representation may include terminal `summary` and
+`files_changed`, but it never echoes command text, command hashes or client
+context. Android uses this endpoint after creating or resuming its stable
+client session:
+
+1. match the persisted turn ID when one exists;
+2. otherwise recover the newest accepted/working turn in the session;
+3. render a matched terminal turn without resubmitting it;
+4. reconnect SSE from the persisted event ID;
+5. retain an uncertain pre-acceptance turn ID for a manual idempotent retry,
+   without persisting its transcript.
+
 ## Submit a command
 
 ```http
@@ -288,6 +326,11 @@ Minimum codes:
 
 Android retries only when `retryable` is true and always reuses the original
 idempotency key.
+
+SSE network retries use bounded exponential backoff with jitter. A valid event
+is persisted as the new cursor before it changes the UI. Exact redeliveries and
+events for older turns do not regress the cursor or replace the active turn's
+UI.
 
 ## Logging and privacy
 

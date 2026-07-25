@@ -43,6 +43,30 @@ class EarCeoApiClient(
         @SerializedName("submitted_at") val submittedAt: String?,
     )
 
+    data class SessionTurn(
+        @SerializedName("turn_id") val turnId: String,
+        @SerializedName("session_id") val sessionId: String,
+        @SerializedName("project_id") val projectId: String,
+        val status: String,
+        @SerializedName("submitted_at") val submittedAt: String?,
+        @SerializedName("updated_at") val updatedAt: String?,
+        val summary: String?,
+        @SerializedName("files_changed") val filesChanged: List<String>?,
+    ) {
+        val isActive: Boolean
+            get() = status in ActiveTurnState.ACTIVE_STATUSES
+
+        val isTerminal: Boolean
+            get() = status in ActiveTurnState.TERMINAL_STATUSES
+    }
+
+    data class SessionStateResponse(
+        @SerializedName("session_id") val sessionId: String,
+        val status: String,
+        @SerializedName("project_id") val projectId: String,
+        val turns: List<SessionTurn>,
+    )
+
     data class ApiFailure(
         val code: String,
         val message: String,
@@ -113,9 +137,21 @@ class EarCeoApiClient(
         )
     }
 
+    fun getSession(
+        sessionId: String,
+        callback: (Result<SessionStateResponse>) -> Unit,
+    ) {
+        executeGet(
+            path = "/v1/sessions/$sessionId",
+            responseType = SessionStateResponse::class.java,
+            callback = callback,
+        )
+    }
+
     fun streamEvents(
         sessionId: String,
         lastEventId: String?,
+        onOpen: () -> Unit = {},
         onEvent: (MobileEvent) -> Unit,
         onFailure: (ApiFailure) -> Unit,
     ): EventSource {
@@ -130,6 +166,10 @@ class EarCeoApiClient(
         return eventSourceFactory.newEventSource(
             request,
             object : EventSourceListener() {
+                override fun onOpen(eventSource: EventSource, response: Response) {
+                    onOpen()
+                }
+
                 override fun onEvent(
                     eventSource: EventSource,
                     id: String?,
@@ -158,6 +198,16 @@ class EarCeoApiClient(
                     onFailure(parseFailure(response, throwable))
                     response?.close()
                 }
+
+                override fun onClosed(eventSource: EventSource) {
+                    onFailure(
+                        ApiFailure(
+                            code = "STREAM_CLOSED",
+                            message = "Backend event stream closed.",
+                            retryable = true,
+                        ),
+                    )
+                }
             },
         )
     }
@@ -180,6 +230,21 @@ class EarCeoApiClient(
         http.connectionPool.evictAll()
     }
 
+    private fun <T> executeGet(
+        path: String,
+        responseType: Class<T>,
+        callback: (Result<T>) -> Unit,
+    ) {
+        if (!configured) {
+            callback(Result.failure(IllegalStateException("Backend is not configured.")))
+            return
+        }
+        val request = authorizedRequest("$normalizedBaseUrl$path")
+            .get()
+            .build()
+        executeRequest(request, responseType, callback)
+    }
+
     private fun <T> executeJson(
         path: String,
         payload: Any,
@@ -197,6 +262,14 @@ class EarCeoApiClient(
                 post(gson.toJson(payload).toRequestBody(jsonMediaType))
             }
             .build()
+        executeRequest(request, responseType, callback)
+    }
+
+    private fun <T> executeRequest(
+        request: Request,
+        responseType: Class<T>,
+        callback: (Result<T>) -> Unit,
+    ) {
         http.newCall(request).enqueue(
             object : Callback {
                 override fun onFailure(call: Call, error: IOException) {

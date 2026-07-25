@@ -59,6 +59,9 @@ Implemented:
 - explicit Submit, Discard and Cancel controls
 - authenticated Android REST client with stable session/turn IDs
 - resumable SSE progress and terminal result handling
+- restart-safe active-turn and SSE cursor persistence
+- startup reconciliation through the queryable backend session
+- bounded SSE reconnect with exponential backoff and jitter
 - an in-repository CEO Gateway with project allow-listing and idempotent turns
 - a durable backend task lifecycle shared by Web, MCP and Android
 
@@ -111,8 +114,12 @@ The integration uses:
 - client-generated IDs for idempotent retries
 - text-only transport; raw PCM and WAV stay on the phone
 
-The remaining acceptance step is a real-device LAN run against the included
-Gateway, first with `mock`, then with `claude-code` on a disposable repository.
+The restart-recovery milestone has completed real-device acceptance. A Huawei
+Mate 60 and Mac communicated directly through a peer-capable personal hotspot
+with no ADB reverse rule; iFLYBUDS Pro 3 SPP, slow-mock completion,
+cursor-based restart recovery, and cancellation all passed. A final
+`claude-code` gate also passed with its repository allow-list restricted to one
+disposable Git repository.
 
 See:
 
@@ -131,6 +138,8 @@ android/
     WavRecorder.kt        Non-blocking PCM-to-WAV writer
     CommandDraft.kt       Final sentence aggregation + idempotent turn state
     EarCeoApiClient.kt    Authenticated REST + SSE client
+    ActiveTurnStore.kt    Non-sensitive active-turn and cursor persistence
+    SseReconnectPolicy.kt Bounded exponential reconnect delays with jitter
 backend/
   receptionist/           Durable task lifecycle and harness adapters
   web/mobile_api.py       Android-facing /v1 Gateway
@@ -251,9 +260,10 @@ Risk policy:
 - [x] Progress and completion events
 - [x] Idempotent session/turn persistence
 - [x] Task cancellation
-- [ ] Huawei real-device LAN integration
-- [ ] Real `claude-code` disposable-repository integration
+- [x] Huawei real-device LAN integration
+- [x] Real `claude-code` disposable-repository integration
 - [ ] Approval cards and response flow
 - [ ] Android TTS with half-duplex audio
-- [ ] Reconnect, queueing and session recovery
+- [x] Active-turn persistence, cursor recovery and bounded reconnect
+- [ ] One-command offline queue
 - [ ] Foreground service and product UI

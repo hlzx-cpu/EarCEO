@@ -40,4 +40,26 @@ class CommandDraftTest {
         draft.finishListening()
         assertNotEquals(firstId, draft.ensureTurnId())
     }
+
+    @Test
+    fun recreationRestoresStableTurnIdWithoutTranscript() {
+        val recreated = CommandDraft()
+
+        recreated.restoreActiveTurn("turn-stable")
+
+        assertEquals("turn-stable", recreated.ensureTurnId())
+        assertEquals(CommandDraft.State.Working, recreated.state)
+        assertEquals("", recreated.text())
+    }
+
+    @Test
+    fun uncertainSubmissionRestoresSameTurnIdForManualRetryWithoutTranscript() {
+        val recreated = CommandDraft()
+
+        recreated.restoreForRetry("turn-uncertain")
+        recreated.replaceForReview("re-entered command")
+
+        assertEquals("turn-uncertain", recreated.ensureTurnId())
+        assertEquals(CommandDraft.State.Review, recreated.state)
+    }
 }

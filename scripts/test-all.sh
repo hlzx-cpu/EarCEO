@@ -11,6 +11,7 @@ if [[ ! -x "$backend_python" ]]; then
     exit 1
 fi
 
+EARCEO_MOCK_DELAY_SECONDS=0 \
 PYTHONPYCACHEPREFIX=/tmp/earceo-pycache \
     "$backend_python" -m pytest -p no:cacheprovider -q "$repo_root/backend"
 

@@ -53,6 +53,13 @@ def receptionist():
 # ---------------------------------------------------------------------------
 
 class TestMockAdapter:
+    def test_delay_can_be_configured_for_real_device_validation(self, monkeypatch):
+        monkeypatch.setenv("EARCEO_MOCK_DELAY_SECONDS", "1.5")
+
+        adapter = MockAdapter()
+
+        assert adapter._delay == 1.5
+
     async def test_spawn_returns_handle(self, mock_adapter):
         handle = await mock_adapter.spawn("do stuff", repo_path="/tmp/x")
         assert isinstance(handle, str)

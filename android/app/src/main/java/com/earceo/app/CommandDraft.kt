@@ -67,6 +67,21 @@ class CommandDraft {
         state = State.Working
     }
 
+    fun restoreActiveTurn(restoredTurnId: String, restoredState: State = State.Working) {
+        require(restoredTurnId.isNotBlank())
+        require(restoredState == State.Sending || restoredState == State.Working)
+        sentences.clear()
+        turnId = restoredTurnId
+        state = restoredState
+    }
+
+    fun restoreForRetry(restoredTurnId: String) {
+        require(restoredTurnId.isNotBlank())
+        sentences.clear()
+        turnId = restoredTurnId
+        state = State.Review
+    }
+
     fun markResult() {
         state = State.Result
     }

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import uuid
 from typing import AsyncIterator
 
@@ -42,11 +43,15 @@ class MockAdapter(HarnessAdapter):
         self,
         events: list[StatusEvent] | None = None,
         result: TaskResult | None = None,
-        delay: float = 0.0,
+        delay: float | None = None,
     ) -> None:
         self._events = events if events is not None else list(self._default_events)
         self._result = result if result is not None else self._default_result
-        self._delay = delay  # seconds between events; 0 = fire immediately
+        self._delay = (
+            float(os.environ.get("EARCEO_MOCK_DELAY_SECONDS", "0"))
+            if delay is None
+            else delay
+        )
 
         # Shared runtime state (per-process)
         self._store: dict[str, dict] = {}

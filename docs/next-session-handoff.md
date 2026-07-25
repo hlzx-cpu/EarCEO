@@ -7,7 +7,8 @@ Updated: 2026-07-25
 - GitHub repository: `hlzx-cpu/EarCEO`
 - Local checkout: `/Users/hanliangzhaoxuan/Documents/Advx26`
 - GitHub default branch: `codex/android-sdk-baseline`
-- Integrated implementation commit: `024fb27`
+- Baseline commit: `d571564`
+- Current development branch: `codex/android-restart-recovery`
 - Development continues only in this monorepo.
 - The old `/Users/hanliangzhaoxuan/Developer/AdvX26/EarCEO-Backend`
   checkout is historical and must not receive new work.
@@ -20,7 +21,7 @@ checkout.
 
 The repository currently passes:
 
-- backend: 81 tests;
+- backend: 82 tests;
 - Android: `testDebugUnitTest`, `assembleDebug`, and `lintDebug`;
 - public-repository secret/vendor-artifact safety check;
 - localhost Gateway smoke test covering session creation, turn submission,
@@ -63,106 +64,95 @@ Implemented reliability properties:
 - atomic JSON writes with inter-process locking;
 - best-effort task cancellation;
 - SSE replay with `Last-Event-ID`;
+- Android `SharedPreferences` recovery containing only backend session ID,
+  active turn ID, non-sensitive status and latest event ID;
+- startup session reconciliation for active and terminal turns;
+- uncertain submissions retain the stable turn ID without retaining transcript
+  text;
+- bounded exponential SSE reconnect with jitter;
 - transcript, credentials, WAV, AAR, and generated APK exclusion from logs/Git.
 
-## Next objective
+## Completed milestone
 
-Complete restart-safe task recovery, then validate the existing phone–headset–
-computer loop on the Huawei Mate 60 over the same LAN.
-
-This is the next engineering milestone because the basic command loop exists,
-but `MainActivity` currently keeps the active turn and latest SSE cursor only
-in memory. An activity/process restart can therefore lose the live UI even
-though the backend task continues correctly.
+Android restart-safe task recovery, native-LAN real-device validation and the
+disposable-repository `claude-code` gate are complete on
+`codex/android-restart-recovery`.
 
 ### Part A — Android active-task recovery
 
-Implement:
+Implemented files:
 
-1. A small `ActiveTurnStore` backed by `SharedPreferences`.
-2. Persist only:
-   - backend session ID;
-   - active turn ID;
-   - non-sensitive task status;
-   - latest SSE event ID.
-3. Do not persist the full transcript or backend token in this store.
-4. Persist the event cursor immediately after every valid SSE event.
-5. Add `GET /v1/sessions/{session_id}` support to `EarCeoApiClient`.
-6. On app startup:
-   - create or resume the client session;
-   - query its current turns;
-   - restore an accepted/working turn;
-   - reconnect SSE with the stored `Last-Event-ID`;
-   - render an already-terminal result without resubmission.
-7. Add exponential SSE reconnect delays with jitter and a sensible maximum.
-8. Clear active-turn recovery state only after a terminal result is durably
-   rendered or the user explicitly discards it.
-9. Keep the same `client_turn_id` for all retries.
+- `ActiveTurnStore.kt`: minimal, synchronous recovery persistence;
+- `SseReconnectPolicy.kt`: 1-second initial delay, exponential growth,
+  ±20% jitter and 30-second maximum;
+- `EarCeoApiClient.kt`: session query and SSE open/closed callbacks;
+- `MainActivity.kt`: startup reconciliation, cursor-first event handling,
+  turn filtering, terminal rendering and retry recovery;
+- JVM tests for serialization, privacy, cursor advancement, terminal clearing,
+  stable turn IDs and reconnect timing.
 
-Add unit tests for:
-
-- recovery-state serialization;
-- cursor advancement;
-- terminal-state clearing;
-- stable turn ID after retry/recreation;
-- duplicate events not regressing the cursor;
-- no transcript stored in recovery preferences.
+`./scripts/test-all.sh` passes with 82 backend tests plus Android unit tests,
+APK assembly, lint and public-repository safety checks.
 
 ### Part B — Huawei LAN validation
 
-After automated tests pass:
+The institutional Wi-Fi attempt failed because clients were isolated despite
+being in the same `/21`. ADB reverse was used only for diagnosis and was
+removed before native-LAN acceptance.
 
-1. Keep `EARCEO_BACKEND=mock`.
-2. Configure an ignored `backend/.env` with:
-   - a long development token;
-   - `EARCEO_PROJECTS` pointing to a disposable demo repository.
-3. Configure the matching ignored `android/local.properties` with:
-   - the Mac LAN URL, for example `http://<mac-ip>:8787`;
-   - the same token;
-   - the same project ID.
-4. Start `./scripts/run-backend.sh`.
-5. Install the debug APK on Huawei Mate 60.
-6. Connect iFLYBUDS Pro 3 and submit one reviewed command.
-7. Verify on the phone:
-   - accepted;
-   - at least one progress update;
-   - completed result;
-   - cancellation of a second command.
-8. While a command is running, temporarily interrupt Wi-Fi or restart the app
-   and verify cursor-based recovery without duplicate work.
-9. Record redacted evidence in `docs/android-development.md`; never record
-   tokens or full transcripts.
+The accepted run used another phone's personal hotspot:
 
-### Part C — first real CEO task
+- Mac `10.195.186.160/24`, Mate 60 `10.195.186.219/24`;
+- bidirectional ICMP 3/3 and an empty ADB reverse list;
+- Gateway logs showed the Mate 60 source address, not loopback;
+- iFLYBUDS Pro 3 SPP ready with both earbuds out of the case;
+- reviewed slow-mock submission, progress and completion;
+- force-stop while active with session ID, turn ID, status and event cursor
+  persisted;
+- restart produced session resume, session query and event-stream GET without
+  a duplicate turn POST;
+- restored UI advanced to 60%;
+- cancellation reached backend and Android terminal state and cleared all
+  `active_turn_*` preference keys.
 
-Only after the mock LAN loop is reliable:
+### Part C — disposable `claude-code` gate
 
-1. Use a disposable Git repository, not the EarCEO repository.
-2. Set `EARCEO_BACKEND=claude-code`.
-3. Allow-list only that disposable repository.
-4. Submit a safe and visible task such as adding a small health endpoint.
-5. Verify files changed, tests, cancellation behavior, and the summary shown
-   on Android.
+Claude Code 2.1.118 was invoked only after Part B passed. Both the EarCEO
+project mapping and subprocess repository allow-list were restricted to:
 
-The current Claude Code adapter may launch a high-authority subprocess.
-Therefore this first run must stay inside a disposable repository and must not
-be exposed beyond the trusted development LAN.
+```text
+/private/tmp/earceo-mock-demo-20260725
+```
+
+The successful task created only `CLAUDE_GATE_OK.txt` with the requested proof
+line and trailing newline. The initial Gateway process could not find `claude`
+on PATH and failed before launching a subprocess; restarting it with
+`/opt/homebrew/bin` in PATH resolved the environment issue. The ignored Gateway
+configuration was returned to `mock` after validation.
 
 ## Acceptance criteria
 
-The next milestone is complete only when:
+All criteria for this milestone passed:
 
-- all existing automated checks still pass;
-- killing and reopening Android restores the active task;
-- SSE resumes after the last persisted event without duplicated UI updates;
-- retrying a submission does not start a second backend task;
-- the Huawei + iFLYBUDS + Mac mock loop passes;
-- one disposable-repository real-agent task completes;
-- no credentials or full transcript contents appear in Git or logs.
+- [x] all automated checks;
+- [x] active-task restoration after force-stop;
+- [x] SSE resume from the persisted cursor without a duplicate turn;
+- [x] stable turn ID and idempotent retry behavior;
+- [x] Huawei + iFLYBUDS + Mac native-LAN mock loop;
+- [x] one disposable-repository real-agent task;
+- [x] no credentials or full transcript contents in Git or application logs.
+
+## Next objective
+
+No further product feature was started. Ask for a newly agreed scope before
+implementing approval cards, an offline queue, TTS, foreground service or
+product UI. The recommended next product slice is approval-state/response
+semantics with backend tests, followed by a minimal Android approval card.
 
 ## Explicitly deferred
 
-Do not implement these until the recovery/LAN milestone passes:
+These remain deferred by the current scope even though the recovery/LAN
+milestone has passed:
 
 - HFP or a custom headset transport;
 - PCM/WAV upload to the backend;
@@ -185,6 +175,8 @@ device connection.
 - `android/app/src/main/java/com/earceo/app/MainActivity.kt`
 - `android/app/src/main/java/com/earceo/app/CommandDraft.kt`
 - `android/app/src/main/java/com/earceo/app/EarCeoApiClient.kt`
+- `android/app/src/main/java/com/earceo/app/ActiveTurnStore.kt`
+- `android/app/src/main/java/com/earceo/app/SseReconnectPolicy.kt`
 - `backend/web/mobile_api.py`
 - `backend/receptionist/core.py`
 - `scripts/test-all.sh`
@@ -195,11 +187,11 @@ device connection.
 > `hlzx-cpu/EarCEO` 的开发。先阅读
 > `docs/next-session-handoff.md`、`README.md`、
 > `docs/backend-contract.md` 和 `docs/development-plan.md`。
-> 当前手机审核提交、Gateway、可靠任务生命周期、SSE 进度/结果及取消已经实现，
-> 自动化基线为后端 81 个测试通过，Android test/assemble/lint 通过。
-> 下一阶段先实现 Android 活跃任务与 SSE cursor 的持久化、应用重启恢复、
-> 指数退避重连及相应测试；然后指导并执行华为 Mate 60 +
-> iFLYBUDS Pro 3 + Mac 的局域网 mock 真机闭环，最后只在一次性测试仓库上验证
-> `claude-code`。不要做 HFP、PCM 上传、后端 ASR、TTS、正式部署或 UI 大改。
-> 所有代码继续放在 EarCEO 单仓库，完成后运行 `./scripts/test-all.sh`，
-> 更新文档并提交到 `codex/` 分支。
+> Android 活跃任务与 SSE cursor 持久化、启动恢复、session 查询和指数退避
+> 重连已经实现；华为 Mate 60 + iFLYBUDS Pro 3 + Mac 的个人热点原生 LAN
+> slow-mock 闭环已经覆盖完成、取消、杀应用恢复和 cursor 续传；随后
+> `claude-code` 也只在 allow-list 的一次性仓库中验证通过。自动化基线为后端
+> 82 个测试通过，Android test/assemble/lint 通过。下一步尚未开始；请先确认
+> 新的产品范围。建议从审批状态/响应契约和后端测试开始。不要擅自做 HFP、
+> PCM/WAV 上传、后端 ASR、Android TTS、正式部署或 UI 大改。所有代码继续
+> 放在 EarCEO 单仓库。

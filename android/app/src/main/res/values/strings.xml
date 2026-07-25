@@ -75,6 +75,11 @@
     <string name="cancel_active_command_first">请先取消正在执行的任务</string>
     <string name="stop_before_submit">请先停止录音并检查命令</string>
     <string name="backend_creating_session">CEO Gateway：正在创建或恢复会话…</string>
+    <string name="backend_recovering_session">CEO Gateway：正在检查可恢复任务…</string>
+    <string name="backend_recovery_failed">CEO Gateway：恢复检查失败 · %1$s；可稍后重试</string>
+    <string name="backend_recovery_deferred_active">CEO Gateway：恢复检查失败 · %1$s；本地活跃任务已保留，未开放重复提交</string>
+    <string name="backend_restored_active">CEO Gateway：已恢复任务 %1$s，正在续传事件…</string>
+    <string name="backend_restored_retry">CEO Gateway：上次提交结果未知；请重新输入同一命令并使用原任务 ID 重试</string>
     <string name="backend_sending_command">CEO Gateway：正在持久化提交…</string>
     <string name="backend_command_accepted">CEO Gateway：任务已接受，等待进度…</string>
     <string name="backend_progress">CEO Gateway：%1$d%%\n%2$s</string>
@@ -82,8 +87,10 @@
     <string name="backend_failed">CEO Gateway：任务失败 · %1$s</string>
     <string name="backend_failed_generic">任务执行失败，请查看后端状态</string>
     <string name="backend_request_failed">CEO Gateway：请求失败 · %1$s；可使用同一命令重试</string>
-    <string name="backend_reconnecting">CEO Gateway：事件流中断 · %1$s；正在重连…</string>
+    <string name="backend_reconnecting">CEO Gateway：事件流中断 · %1$s；%2$.1f 秒后重连…</string>
+    <string name="backend_stream_stopped">CEO Gateway：事件流停止 · %1$s；请检查配置后重启应用</string>
     <string name="backend_cancelled">CEO Gateway：任务已取消</string>
+    <string name="backend_cancelled_result">任务已按用户请求取消</string>
     <string name="no_active_command">当前没有可取消的任务</string>
     <string name="initialize_first">请先初始化 SDK</string>
     <string name="connect_first">请先连接耳机</string>

@@ -179,7 +179,7 @@ Acceptance:
 
 ## Prioritized backlog
 
-### P0 — implemented in code; real-device integration remains
+### P0 — implemented and accepted on the primary device
 
 - [x] Freeze API v1 in the monorepo
 - [x] Aggregate Final sentences into a command draft
@@ -188,14 +188,16 @@ Acceptance:
 - [x] Implement minimal CEO Gateway
 - [x] Show accepted, working, completed and failed
 - [x] Verify idempotent retry in automated tests
-- [ ] Verify the full loop on Huawei Mate 60 over LAN
+- [x] Verify the full loop on Huawei Mate 60 over LAN
+- [x] Gate `claude-code` in one allow-listed disposable repository
 
 ### P1 — required for a credible product demo
 
 - [x] SSE progress
 - [x] in-process event cursor reconnect
-- [ ] persist the active turn and event cursor across app restart
-- [ ] bounded reconnect with exponential backoff and jitter
+- [x] persist the active turn and event cursor across app restart
+- [x] reconcile accepted/working/terminal turns through session query
+- [x] bounded reconnect with exponential backoff and jitter
 - [ ] approval card
 - [ ] Android TTS
 - [ ] half-duplex state machine
@@ -240,18 +242,20 @@ primary integration device.
 
 ## Next working session
 
-Do these in order:
+The restart-recovery/LAN milestone is complete. Preserve the verified baseline
+and do not begin HFP, PCM/WAV upload, backend ASR, Android TTS, production
+deployment or a UI overhaul without a newly agreed scope.
 
-1. persist the active session ID, turn ID and latest SSE event ID on Android;
-2. restore an accepted/working task after activity or process restart without
-   resubmitting it;
-3. add bounded SSE reconnect with exponential backoff and jitter;
-4. run the complete Huawei Mate 60 + iFLYBUDS + Mac LAN loop against `mock`;
-5. repeat one safe task against `claude-code` in a disposable repository.
+When a follow-up product milestone is selected, the recommended order is:
 
-The first integration task should be safe, visible and repeatable—for example,
-asking the agent team to add or update a small health endpoint in a disposable
-demo repository.
+1. approval state and response contract with backend tests;
+2. a minimal Android approval card without redesigning the diagnostic UI;
+3. a bounded one-command offline queue;
+4. foreground-service and product-UI work only after the interaction contract
+   is stable.
+
+Keep future real-agent testing constrained to explicitly allow-listed
+disposable repositories until approval controls are implemented.
 
 The detailed continuation brief and ready-to-copy prompt are in
 [`next-session-handoff.md`](next-session-handoff.md).

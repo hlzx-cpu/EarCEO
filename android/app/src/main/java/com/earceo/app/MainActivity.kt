@@ -83,7 +83,11 @@ class MainActivity : Activity() {
     private var pendingExportFile: File? = null
     private var currentSessionId: String? = null
     private var lastEventId: String? = null
+    private var lastEventSequence = 0
     private var eventSource: EventSource? = null
+    private var streamGeneration = 0
+    private var backendRecoveryInProgress = false
+    private val reconnectPolicy = SseReconnectPolicy()
 
     private val apiClient: EarCeoApiClient by lazy {
         EarCeoApiClient(
@@ -99,6 +103,14 @@ class MainActivity : Activity() {
             ?: "client-session-${UUID.randomUUID()}".also {
                 preferences.edit().putString("client_session_id", it).apply()
             }
+    }
+
+    private val activeTurnStore: ActiveTurnStore by lazy {
+        ActiveTurnStore(
+            SharedPreferencesRecoveryPreferences(
+                getSharedPreferences("earceo-mobile", MODE_PRIVATE),
+            ),
+        )
     }
 
     @Volatile private var sdkReady = false
@@ -124,6 +136,7 @@ class MainActivity : Activity() {
         setContentView(buildInterface())
         refreshButtons()
         initializeSdk()
+        recoverBackendTask()
     }
 
     override fun onDestroy() {
@@ -134,7 +147,7 @@ class MainActivity : Activity() {
             VHOManager.release()
         }
         finishWavRecording(updateUi = false)
-        eventSource?.cancel()
+        closeEventStream()
         apiClient.shutdown()
         audioFileExecutor.shutdown()
         super.onDestroy()
@@ -727,15 +740,204 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun recoverBackendTask() {
+        if (!apiClient.configured) return
+        backendRecoveryInProgress = true
+        backendStatus.text = getString(R.string.backend_recovering_session)
+        refreshButtons()
+        apiClient.createOrResumeSession(clientSessionId) { sessionResult ->
+            sessionResult.fold(
+                onSuccess = { session ->
+                    apiClient.getSession(session.sessionId) { stateResult ->
+                        stateResult.fold(
+                            onSuccess = { state ->
+                                ui { restoreSessionState(state) }
+                            },
+                            onFailure = ::finishRecoveryWithFailure,
+                        )
+                    }
+                },
+                onFailure = ::finishRecoveryWithFailure,
+            )
+        }
+    }
+
+    private fun finishRecoveryWithFailure(error: Throwable) {
+        val code = (error as? EarCeoApiClient.ApiException)?.failure?.code
+            ?: error.javaClass.simpleName
+        Log.w(TAG, "Backend recovery failed: code=$code")
+        ui {
+            backendRecoveryInProgress = false
+            val stored = activeTurnStore.load()
+            when {
+                stored?.isTerminal == true -> {
+                    currentSessionId = stored.sessionId
+                    commandDraft.restoreActiveTurn(stored.turnId)
+                    renderTerminalResult(stored.status, null)
+                }
+                stored?.status in ActiveTurnState.ACTIVE_STATUSES -> {
+                    currentSessionId = stored?.sessionId
+                    commandDraft.restoreActiveTurn(stored!!.turnId)
+                    lastEventId = stored.lastEventId
+                    backendStatus.text = getString(
+                        R.string.backend_recovery_deferred_active,
+                        code,
+                    )
+                }
+                else -> {
+                    stored?.let {
+                        currentSessionId = it.sessionId
+                        commandDraft.restoreForRetry(it.turnId)
+                    }
+                    backendStatus.text = getString(R.string.backend_recovery_failed, code)
+                }
+            }
+            refreshButtons()
+        }
+    }
+
+    private fun restoreSessionState(session: EarCeoApiClient.SessionStateResponse) {
+        backendRecoveryInProgress = false
+        currentSessionId = session.sessionId
+        val stored = activeTurnStore.load()
+        if (stored != null && stored.sessionId != session.sessionId) {
+            activeTurnStore.clear()
+        }
+        val applicableStored = stored?.takeIf { it.sessionId == session.sessionId }
+        val storedTurn = applicableStored?.let { recovery ->
+            session.turns.firstOrNull { it.turnId == recovery.turnId }
+        }
+        val activeTurn = storedTurn?.takeIf { it.isActive }
+            ?: session.turns
+                .filter(EarCeoApiClient.SessionTurn::isActive)
+                .maxByOrNull { it.updatedAt ?: it.submittedAt.orEmpty() }
+
+        when {
+            activeTurn != null -> {
+                val keepCursor = applicableStored?.turnId == activeTurn.turnId
+                lastEventId = applicableStored?.lastEventId?.takeIf { keepCursor }
+                lastEventSequence = 0
+                activeTurnStore.save(
+                    ActiveTurnState(
+                        sessionId = session.sessionId,
+                        turnId = activeTurn.turnId,
+                        status = activeTurn.status,
+                        lastEventId = lastEventId,
+                    ),
+                )
+                commandDraft.restoreActiveTurn(activeTurn.turnId)
+                backendStatus.text = getString(
+                    R.string.backend_restored_active,
+                    activeTurn.turnId,
+                )
+                backendResult.text = getString(R.string.no_backend_result)
+                refreshButtons()
+                openEventStream(session.sessionId)
+            }
+            storedTurn?.isTerminal == true -> {
+                commandDraft.restoreActiveTurn(storedTurn.turnId)
+                renderTerminalResult(
+                    status = storedTurn.status,
+                    summary = storedTurn.summary,
+                )
+            }
+            applicableStored?.status in setOf("sending", "retry") -> {
+                lastEventId = applicableStored?.lastEventId
+                commandDraft.restoreForRetry(applicableStored!!.turnId)
+                activeTurnStore.save(applicableStored.copy(status = "retry"))
+                backendStatus.text = getString(R.string.backend_restored_retry)
+                backendResult.text = getString(R.string.no_backend_result)
+                refreshButtons()
+            }
+            else -> {
+                if (applicableStored != null) {
+                    activeTurnStore.clear()
+                }
+                backendStatus.text = getString(R.string.backend_ready, apiClient.projectId)
+                refreshButtons()
+            }
+        }
+    }
+
+    private fun refreshTerminalTurn(
+        sessionId: String,
+        turnId: String,
+        fallbackStatus: String,
+    ) {
+        apiClient.getSession(sessionId) { result ->
+            result.fold(
+                onSuccess = { session ->
+                    val turn = session.turns.firstOrNull { it.turnId == turnId }
+                    ui {
+                        if (turn?.isTerminal == true) {
+                            renderTerminalResult(turn.status, turn.summary)
+                        } else if (fallbackStatus in ActiveTurnState.TERMINAL_STATUSES) {
+                            renderTerminalResult(fallbackStatus, turn?.summary)
+                        } else {
+                            activeTurnStore.updateStatus(turn?.status ?: fallbackStatus)
+                            commandDraft.markWorking()
+                            openEventStream(sessionId)
+                            refreshButtons()
+                        }
+                    }
+                },
+                onFailure = { error ->
+                    if (fallbackStatus in ActiveTurnState.TERMINAL_STATUSES) {
+                        ui { renderTerminalResult(fallbackStatus, null) }
+                    } else {
+                        handleBackendFailure(error)
+                    }
+                },
+            )
+        }
+    }
+
+    private fun renderTerminalResult(
+        status: String,
+        summary: String?,
+        code: String? = null,
+    ) {
+        activeTurnStore.updateStatus(status)
+        commandDraft.markResult()
+        when (status) {
+            "completed" -> {
+                backendStatus.text = getString(R.string.backend_completed)
+                backendResult.text = summary ?: getString(R.string.backend_completed)
+            }
+            "cancelled" -> {
+                backendStatus.text = getString(R.string.backend_cancelled)
+                backendResult.text = summary ?: getString(R.string.backend_cancelled_result)
+            }
+            else -> {
+                backendStatus.text = getString(
+                    R.string.backend_failed,
+                    code ?: "UNKNOWN",
+                )
+                backendResult.text = summary ?: getString(R.string.backend_failed_generic)
+            }
+        }
+        closeEventStream()
+        activeTurnStore.clearAfterTerminal(status)
+        refreshButtons()
+    }
+
+    private fun closeEventStream() {
+        streamGeneration += 1
+        eventSource?.cancel()
+        eventSource = null
+        reconnectPolicy.reset()
+    }
+
     private fun clearTranscript() {
         if (commandDraft.isActive()) {
             toast(getString(R.string.cancel_active_command_first))
             return
         }
         commandDraft.discard()
-        eventSource?.cancel()
-        eventSource = null
+        activeTurnStore.clear()
+        closeEventStream()
         lastEventId = null
+        lastEventSequence = 0
         partialText.text = getString(R.string.no_partial_result)
         transcriptText.setText("")
         backendStatus.text = if (apiClient.configured) {
@@ -774,6 +976,15 @@ class MainActivity : Activity() {
             sessionResult.fold(
                 onSuccess = { session ->
                     currentSessionId = session.sessionId
+                    lastEventId = null
+                    lastEventSequence = 0
+                    activeTurnStore.save(
+                        ActiveTurnState(
+                            sessionId = session.sessionId,
+                            turnId = turnId,
+                            status = "sending",
+                        ),
+                    )
                     submitTurn(session.sessionId, turnId, commandText)
                 },
                 onFailure = ::handleBackendFailure,
@@ -790,7 +1001,12 @@ class MainActivity : Activity() {
             wavCaptured = latestWavFile?.isFile == true,
         ) { turnResult ->
             turnResult.fold(
-                onSuccess = {
+                onSuccess = { turn ->
+                    if (turn.status in ActiveTurnState.TERMINAL_STATUSES) {
+                        refreshTerminalTurn(sessionId, turnId, turn.status)
+                        return@fold
+                    }
+                    activeTurnStore.updateStatus(turn.status)
                     ui {
                         commandDraft.markWorking()
                         backendStatus.text = getString(R.string.backend_command_accepted)
@@ -804,28 +1020,65 @@ class MainActivity : Activity() {
     }
 
     private fun openEventStream(sessionId: String) {
+        val generation = ++streamGeneration
         eventSource?.cancel()
         eventSource = apiClient.streamEvents(
             sessionId = sessionId,
             lastEventId = lastEventId,
+            onOpen = {
+                if (generation == streamGeneration) {
+                    reconnectPolicy.reset()
+                }
+            },
             onEvent = { event ->
+                if (generation != streamGeneration ||
+                    event.sessionId != sessionId ||
+                    event.eventId.isBlank() ||
+                    event.sequence <= 0 ||
+                    event.sequence <= lastEventSequence
+                ) {
+                    return@streamEvents
+                }
+                if (!activeTurnStore.advanceCursor(event.eventId)) {
+                    return@streamEvents
+                }
                 lastEventId = event.eventId
-                ui { handleBackendEvent(event) }
+                lastEventSequence = event.sequence
+                reconnectPolicy.reset()
+                ui {
+                    val activeTurnId = activeTurnStore.load()?.turnId
+                        ?: commandDraft.turnId
+                    if (event.turnId == null || event.turnId == activeTurnId) {
+                        handleBackendEvent(event)
+                    }
+                }
             },
             onFailure = { failure ->
                 ui {
-                    if (commandDraft.isActive()) {
+                    if (generation != streamGeneration || !commandDraft.isActive()) {
+                        return@ui
+                    }
+                    if (failure.retryable) {
+                        val delayMs = reconnectPolicy.nextDelayMs()
                         backendStatus.text = getString(
                             R.string.backend_reconnecting,
                             failure.code,
+                            delayMs / 1_000.0,
                         )
                         window.decorView.postDelayed(
                             {
-                                if (commandDraft.isActive() && !isFinishing) {
+                                if (generation == streamGeneration &&
+                                    commandDraft.isActive() &&
+                                    !isFinishing
+                                ) {
                                     openEventStream(sessionId)
                                 }
-                            },
-                            SSE_RECONNECT_DELAY_MS,
+                            }, delayMs,
+                        )
+                    } else {
+                        backendStatus.text = getString(
+                            R.string.backend_stream_stopped,
+                            failure.code,
                         )
                     }
                 }
@@ -836,10 +1089,12 @@ class MainActivity : Activity() {
     private fun handleBackendEvent(event: EarCeoApiClient.MobileEvent) {
         when (event.type) {
             "turn.accepted" -> {
+                activeTurnStore.updateStatus("accepted")
                 commandDraft.markWorking()
                 backendStatus.text = getString(R.string.backend_command_accepted)
             }
             "task.progress" -> {
+                activeTurnStore.updateStatus("working")
                 commandDraft.markWorking()
                 val message = event.data.get("message")?.asString.orEmpty()
                 val progress = event.data.get("progress_pct")?.asInt ?: 0
@@ -850,23 +1105,20 @@ class MainActivity : Activity() {
                 )
             }
             "task.completed" -> {
-                commandDraft.markResult()
-                backendStatus.text = getString(R.string.backend_completed)
-                backendResult.text = event.data.get("summary")?.asString
-                    ?: getString(R.string.backend_completed)
-                eventSource?.cancel()
-                eventSource = null
+                renderTerminalResult(
+                    status = "completed",
+                    summary = event.data.get("summary")?.asString,
+                )
             }
             "task.failed" -> {
-                commandDraft.markResult()
-                backendStatus.text = getString(
-                    R.string.backend_failed,
-                    event.data.get("code")?.asString ?: "UNKNOWN",
+                val status = event.data.get("status")?.asString
+                    ?.takeIf { it in ActiveTurnState.TERMINAL_STATUSES }
+                    ?: "failed"
+                renderTerminalResult(
+                    status = status,
+                    summary = event.data.get("message")?.asString,
+                    code = event.data.get("code")?.asString,
                 )
-                backendResult.text = event.data.get("message")?.asString
-                    ?: getString(R.string.backend_failed_generic)
-                eventSource?.cancel()
-                eventSource = null
             }
         }
         refreshButtons()
@@ -877,7 +1129,9 @@ class MainActivity : Activity() {
             ?: error.javaClass.simpleName
         Log.w(TAG, "Backend request failed: code=$code")
         ui {
-            commandDraft.returnToReview()
+            if (commandDraft.state == CommandDraft.State.Sending) {
+                commandDraft.returnToReview()
+            }
             backendStatus.text = getString(R.string.backend_request_failed, code)
             refreshButtons()
         }
@@ -893,14 +1147,8 @@ class MainActivity : Activity() {
         cancelButton.isEnabled = false
         apiClient.cancelTurn(sessionId, turnId) { result ->
             result.fold(
-                onSuccess = {
-                    ui {
-                        commandDraft.markResult()
-                        backendStatus.text = getString(R.string.backend_cancelled)
-                        eventSource?.cancel()
-                        eventSource = null
-                        refreshButtons()
-                    }
+                onSuccess = { turn ->
+                    refreshTerminalTurn(sessionId, turnId, turn.status)
                 },
                 onFailure = ::handleBackendFailure,
             )
@@ -1011,8 +1259,11 @@ class MainActivity : Activity() {
         exportRecordingButton.isEnabled =
             latestWavFile?.isFile == true && !recording && !wavFinalizing
         if (::submitButton.isInitialized) {
-            submitButton.isEnabled = apiClient.configured && !recording && !commandActive
-            discardButton.isEnabled = !recording && !commandActive
+            submitButton.isEnabled = apiClient.configured &&
+                !backendRecoveryInProgress &&
+                !recording &&
+                !commandActive
+            discardButton.isEnabled = !backendRecoveryInProgress && !recording && !commandActive
             cancelButton.isEnabled = commandActive && currentSessionId != null
             transcriptText.isEnabled = !recording && !commandActive
         }
@@ -1087,6 +1338,5 @@ class MainActivity : Activity() {
         private const val REQUEST_EXPORT_WAV = 1003
         private const val PCM_UI_UPDATE_INTERVAL = 25L
         private const val WAV_HEADER_BYTES = 44L
-        private const val SSE_RECONNECT_DELAY_MS = 2_000L
     }
 }
