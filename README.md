@@ -127,6 +127,7 @@ disposable Git repository.
 
 See:
 
+- [Cross-computer Codex handoff](tocodex.md)
 - [Android ↔ CEO API contract](docs/backend-contract.md)
 - [Development plan](docs/development-plan.md)
 - [Architecture and risk policy](docs/architecture.md)

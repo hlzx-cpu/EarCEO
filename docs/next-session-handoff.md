@@ -225,6 +225,7 @@ device connection.
 
 ## Files to inspect first
 
+- `tocodex.md`
 - `README.md`
 - `docs/backend-contract.md`
 - `docs/development-plan.md`
