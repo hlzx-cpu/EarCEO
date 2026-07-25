@@ -68,6 +68,8 @@ def test_missing_schema_fields_are_normalised(isolated_state_dir):
     assert state["checkpoints"] == []
     assert state["delegations"] == []
     assert state["tasks"] == {}
+    assert state["mobile_approvals"] == {}
+    assert state["mobile_decision_ids"] == {}
     assert state["custom"] is True
 
 

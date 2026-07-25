@@ -128,10 +128,11 @@ Android tasks:
 
 Backend tasks:
 
-- pause orchestration at an approval boundary;
-- emit `approval.required`;
-- enforce expiration and single-use decisions;
-- resume or abort after the decision.
+- [x] pause before dispatch using a server-owned project risk policy;
+- [x] emit durable `approval.required` and `approval.resolved` events;
+- [x] enforce expiration and single-use, idempotent decisions;
+- [x] dispatch or abort after an R2 decision and block R3 approval;
+- [ ] accept action-specific, mid-task approval boundaries from an adapter.
 
 Acceptance:
 
@@ -198,7 +199,8 @@ Acceptance:
 - [x] persist the active turn and event cursor across app restart
 - [x] reconcile accepted/working/terminal turns through session query
 - [x] bounded reconnect with exponential backoff and jitter
-- [ ] approval card
+- [x] backend approval persistence and decision contract
+- [ ] Android approval card
 - [ ] Android TTS
 - [ ] half-duplex state machine
 - [ ] one-command offline queue
@@ -248,8 +250,9 @@ deployment or a UI overhaul without a newly agreed scope.
 
 When a follow-up product milestone is selected, the recommended order is:
 
-1. approval state and response contract with backend tests;
-2. a minimal Android approval card without redesigning the diagnostic UI;
+1. a minimal Android approval card against the completed backend contract,
+   without redesigning the diagnostic UI;
+2. restart recovery while a turn is `waiting_approval`;
 3. a bounded one-command offline queue;
 4. foreground-service and product-UI work only after the interaction contract
    is stable.

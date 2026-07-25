@@ -48,6 +48,8 @@ def _new_state() -> State:
         "mobile_sessions": {},
         "mobile_session_ids": {},
         "mobile_turns": {},
+        "mobile_approvals": {},
+        "mobile_decision_ids": {},
         "mobile_events": {},
         "created_at": time.time(),
     }
@@ -62,6 +64,8 @@ def _normalise_state(state: State) -> State:
         "mobile_sessions": dict,
         "mobile_session_ids": dict,
         "mobile_turns": dict,
+        "mobile_approvals": dict,
+        "mobile_decision_ids": dict,
         "mobile_events": dict,
     }
     for field, expected_type in expected_collections.items():

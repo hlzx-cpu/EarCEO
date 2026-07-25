@@ -1,7 +1,8 @@
 # Android ↔ CEO API contract
 
-Status: **core MVP v1 implemented** (sessions, turns, SSE and cancellation).
-Approval events remain a planned extension.
+Status: **core MVP v1 implemented**. Sessions, turns, SSE, cancellation, and
+the backend approval state/decision contract are implemented. The Android
+approval card remains a separate phase.
 
 This contract connects EarCEO Android to the in-repository `backend/` CEO
 Gateway. The Gateway reuses the durable Receptionist task core and adapter
@@ -91,14 +92,16 @@ Response:
       "submitted_at": "2026-07-25T10:00:00Z",
       "updated_at": "2026-07-25T10:00:03Z"
     }
-  ]
+  ],
+  "approvals": []
 }
 ```
 
 The public turn representation may include terminal `summary` and
 `files_changed`, but it never echoes command text, command hashes or client
-context. Android uses this endpoint after creating or resuming its stable
-client session:
+context. `approvals` contains only public approval metadata and decisions, not
+the reviewed command. Android uses this endpoint after creating or resuming
+its stable client session:
 
 1. match the persisted turn ID when one exists;
 2. otherwise recover the newest accepted/working turn in the session;
@@ -144,7 +147,10 @@ Accepted response:
 ```
 
 The response only confirms durable acceptance. CEO reasoning and agent work are
-reported through the event stream.
+reported through the event stream. When the server-owned project policy
+requires approval, the response status is `waiting_approval`; the durable
+`approval.required` event follows the `turn.accepted` event, and no task has
+been dispatched.
 
 ## Cancel a command
 
@@ -152,8 +158,9 @@ reported through the event stream.
 POST /v1/sessions/{session_id}/turns/{turn_id}/cancel
 ```
 
-Cancellation is best-effort and succeeds only while the current backend
-process owns the live adapter.
+Cancellation of a live adapter is best-effort and requires ownership by the
+current backend process. A `waiting_approval` turn has no live adapter and is
+cancelled durably without dispatch.
 
 ## Event stream
 
@@ -185,6 +192,7 @@ Required MVP events:
 | `assistant.message` | Short CEO response for screen/TTS |
 | `task.progress` | Checkpoint from `coding-vibe` |
 | `approval.required` | Human decision is required |
+| `approval.resolved` | Approval was approved, rejected, or expired |
 | `task.completed` | Final result |
 | `task.failed` | Terminal failure |
 | `session.warning` | Recoverable connection or backend warning |
@@ -224,6 +232,21 @@ screen but are not read aloud automatically.
 
 ## Approval flow
 
+The first implemented approval boundary is a server-owned pre-dispatch gate.
+Android cannot submit or lower a risk level. The Gateway reads the optional
+project mapping:
+
+```dotenv
+EARCEO_APPROVAL_RISKS={"shared-test-project":"R2"}
+EARCEO_APPROVAL_TTL_SECONDS=600
+```
+
+Projects absent from the mapping, or mapped to R0/R1, use the existing
+automatic dispatch path. R2 turns are persisted as `waiting_approval`; no
+Receptionist task or adapter subprocess exists until approval. R3 turns also
+wait, but expose only `reject`. The mapping defaults to `{}`, so this phase does
+not change existing Android behavior until the Android approval card is ready.
+
 Example event:
 
 ```json
@@ -240,6 +263,10 @@ Example event:
 }
 ```
 
+The approval and the `approval.required` event are written in the same atomic
+state transaction as the turn. `GET /v1/sessions/{session_id}` returns the same
+public approval fields for restart recovery.
+
 Decision:
 
 ```http
@@ -254,7 +281,21 @@ Idempotency-Key: <client_decision_id>
 }
 ```
 
-R3 operations must not offer an `approve` action through voice alone.
+The `Idempotency-Key` must equal `client_decision_id`. An accepted R2 approval
+atomically changes the turn to `accepted`, writes `approval.resolved`, and then
+claims dispatch exactly once. A rejection moves the turn directly to
+`cancelled` without creating a backend task. Repeating the same decision is a
+successful no-op; conflicting decisions return 409.
+
+Approvals expire after 30–3600 seconds, with a 600-second default. Expiration is
+enforced during decision, session-query, cancellation, and active SSE polling.
+An expired approval becomes terminal `failed`, emits `approval.resolved` plus
+`task.failed`, and can never dispatch.
+
+R3 operations never expose an approve choice and an attempted mobile approval
+returns 403 `APPROVAL_NOT_ALLOWED`. This backend phase does not yet implement a
+mid-task adapter pause or the Android approval UI; those will reuse the same
+persisted approval and decision model.
 
 ## Backend adapter boundary
 
@@ -321,7 +362,12 @@ Minimum codes:
 - `DUPLICATE_TURN`
 - `CEO_UNAVAILABLE`
 - `TASK_TIMEOUT`
+- `APPROVAL_NOT_FOUND`
 - `APPROVAL_EXPIRED`
+- `APPROVAL_NOT_ALLOWED`
+- `APPROVAL_ALREADY_DECIDED`
+- `DUPLICATE_DECISION`
+- `APPROVAL_CONFIG_INVALID`
 - `INTERNAL_ERROR`
 
 Android retries only when `retryable` is true and always reuses the original

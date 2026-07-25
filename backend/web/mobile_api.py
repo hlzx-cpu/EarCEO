@@ -12,20 +12,23 @@ import time
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Literal
 
 from fastapi import APIRouter, Depends, FastAPI, Header, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from receptionist.core import TaskCancelledError, TaskExecutionError
-from receptionist.state import get_task, load_state, update_state
+from receptionist.state import load_state, update_state
 from web.runtime import receptionist
 
 
 router = APIRouter(prefix="/v1", tags=["mobile-v1"])
 _ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 _MAX_COMMAND_LENGTH = 20_000
+_DEFAULT_APPROVAL_TTL_SECONDS = 600
+_MIN_APPROVAL_TTL_SECONDS = 30
+_MAX_APPROVAL_TTL_SECONDS = 3_600
 
 
 class MobileApiError(Exception):
@@ -71,6 +74,11 @@ class SubmitTurnRequest(BaseModel):
     client_context: dict[str, Any] = Field(default_factory=dict)
 
 
+class ApprovalDecisionRequest(BaseModel):
+    client_decision_id: str
+    decision: Literal["approve", "reject"]
+
+
 def install_mobile_api(app: FastAPI) -> None:
     """Install routes plus the contract-shaped error handler."""
 
@@ -95,6 +103,14 @@ def install_mobile_api(app: FastAPI) -> None:
 
 def _utc_now() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _utc_at(timestamp: float) -> str:
+    return datetime.fromtimestamp(timestamp, UTC).isoformat().replace("+00:00", "Z")
+
+
+def _epoch_now() -> float:
+    return time.time()
 
 
 def _validate_id(value: str, field_name: str) -> str:
@@ -153,6 +169,63 @@ def _resolve_project(project_id: str) -> Path:
             "The requested project is not available.",
         )
     return project_path
+
+
+def _approval_risk_for_project(project_id: str) -> str | None:
+    """Return a server-owned approval risk for a project.
+
+    The Android request deliberately cannot provide or lower this value.
+    Projects absent from the mapping retain the current automatic R0/R1 path.
+    """
+
+    raw = os.environ.get("EARCEO_APPROVAL_RISKS", "")
+    try:
+        configured = json.loads(raw) if raw else {}
+    except json.JSONDecodeError as exc:
+        raise MobileApiError(
+            503,
+            "APPROVAL_CONFIG_INVALID",
+            "EARCEO_APPROVAL_RISKS must be a JSON object.",
+        ) from exc
+    if not isinstance(configured, dict):
+        raise MobileApiError(
+            503,
+            "APPROVAL_CONFIG_INVALID",
+            "EARCEO_APPROVAL_RISKS must be a JSON object.",
+        )
+    risk_level = configured.get(project_id)
+    if risk_level is None or risk_level in {"R0", "R1"}:
+        return None
+    if risk_level not in {"R2", "R3"}:
+        raise MobileApiError(
+            503,
+            "APPROVAL_CONFIG_INVALID",
+            "Approval risk levels must be one of R0, R1, R2, or R3.",
+        )
+    return str(risk_level)
+
+
+def _approval_ttl_seconds() -> int:
+    raw = os.environ.get(
+        "EARCEO_APPROVAL_TTL_SECONDS",
+        str(_DEFAULT_APPROVAL_TTL_SECONDS),
+    )
+    try:
+        ttl_seconds = int(raw)
+    except ValueError as exc:
+        raise MobileApiError(
+            503,
+            "APPROVAL_CONFIG_INVALID",
+            "EARCEO_APPROVAL_TTL_SECONDS must be an integer.",
+        ) from exc
+    if not _MIN_APPROVAL_TTL_SECONDS <= ttl_seconds <= _MAX_APPROVAL_TTL_SECONDS:
+        raise MobileApiError(
+            503,
+            "APPROVAL_CONFIG_INVALID",
+            f"Approval TTL must be {_MIN_APPROVAL_TTL_SECONDS}-"
+            f"{_MAX_APPROVAL_TTL_SECONDS} seconds.",
+        )
+    return ttl_seconds
 
 
 def _session_or_error(session_id: str) -> dict[str, Any]:
@@ -250,8 +323,92 @@ def _public_turn(turn: dict[str, Any]) -> dict[str, Any]:
         "cancelled_at",
         "summary",
         "files_changed",
+        "approval_id",
     )
     return {field: turn[field] for field in public_fields if field in turn}
+
+
+def _public_approval(approval: dict[str, Any]) -> dict[str, Any]:
+    public_fields = (
+        "approval_id",
+        "session_id",
+        "turn_id",
+        "risk_level",
+        "title",
+        "summary",
+        "choices",
+        "status",
+        "created_at",
+        "updated_at",
+        "expires_at",
+        "decision",
+        "decided_at",
+        "expired_at",
+    )
+    return {
+        field: approval[field]
+        for field in public_fields
+        if field in approval
+    }
+
+
+def _expire_pending_approvals(session_id: str) -> list[str]:
+    now_epoch = _epoch_now()
+    now = _utc_at(now_epoch)
+    approvals = load_state()["mobile_approvals"].values()
+    if not any(
+        approval["session_id"] == session_id
+        and approval["status"] == "pending"
+        and now_epoch >= float(approval["expires_at_epoch"])
+        for approval in approvals
+    ):
+        return []
+
+    def expire(state: dict[str, Any]) -> list[str]:
+        expired_ids: list[str] = []
+        for approval in state["mobile_approvals"].values():
+            if (
+                approval["session_id"] != session_id
+                or approval["status"] != "pending"
+                or now_epoch < float(approval["expires_at_epoch"])
+            ):
+                continue
+            approval["status"] = "expired"
+            approval["updated_at"] = now
+            approval["expired_at"] = now
+            turn = state["mobile_turns"].get(approval["turn_id"])
+            if turn is not None and turn["status"] == "waiting_approval":
+                turn["status"] = "failed"
+                turn["updated_at"] = now
+                turn["failed_at"] = now
+                turn["summary"] = "Approval expired before the task was dispatched."
+            _append_event_in_state(
+                state,
+                session_id=session_id,
+                turn_id=approval["turn_id"],
+                event_type="approval.resolved",
+                data={
+                    "approval_id": approval["approval_id"],
+                    "status": "expired",
+                    "risk_level": approval["risk_level"],
+                },
+            )
+            _append_event_in_state(
+                state,
+                session_id=session_id,
+                turn_id=approval["turn_id"],
+                event_type="task.failed",
+                data={
+                    "status": "failed",
+                    "code": "APPROVAL_EXPIRED",
+                    "message": "The approval expired before a decision was recorded.",
+                    "retryable": False,
+                },
+            )
+            expired_ids.append(approval["approval_id"])
+        return expired_ids
+
+    return update_state(expire)
 
 
 async def _monitor_turn(session_id: str, turn_id: str) -> None:
@@ -350,6 +507,99 @@ async def _monitor_turn(session_id: str, turn_id: str) -> None:
         )
 
 
+async def _dispatch_turn(session_id: str, turn_id: str) -> bool:
+    """Atomically claim and dispatch an accepted turn exactly once."""
+
+    snapshot = load_state()["mobile_turns"].get(turn_id)
+    if snapshot is None or snapshot["session_id"] != session_id:
+        return False
+    project_path = _resolve_project(snapshot["project_id"])
+    now = _utc_now()
+
+    def claim(state: dict[str, Any]) -> dict[str, Any] | None:
+        turn = state["mobile_turns"].get(turn_id)
+        if (
+            turn is None
+            or turn["session_id"] != session_id
+            or turn["status"] != "accepted"
+            or turn.get("dispatch_status") == "started"
+        ):
+            return None
+        turn["dispatch_status"] = "started"
+        turn["dispatch_started_at"] = now
+        turn["updated_at"] = now
+        return dict(turn)
+
+    turn = update_state(claim)
+    if turn is None:
+        return False
+    backend = os.environ.get("EARCEO_BACKEND", "mock")
+
+    def on_status(event: Any) -> None:
+        _set_turn_status(turn_id, "working")
+        _append_event(
+            session_id,
+            turn_id,
+            "task.progress",
+            {
+                "milestone": event.kind,
+                "message": event.text,
+                "progress_pct": {
+                    "progress": 25,
+                    "tool": 50,
+                    "message": 60,
+                    "done": 100,
+                    "error": 0,
+                }.get(event.kind, 50),
+            },
+        )
+
+    try:
+        await receptionist.dispatch_async(
+            turn["input_text"],
+            backend=backend,
+            repo_path=str(project_path),
+            context={
+                "task_id": turn_id,
+                "session_id": session_id,
+                "project_id": turn["project_id"],
+                "source": "earceo-android",
+            },
+            task_id=turn_id,
+            on_status=on_status,
+        )
+    except Exception as exc:
+        _set_turn_status(
+            turn_id,
+            "failed",
+            dispatch_status="failed",
+            error={"type": type(exc).__name__, "message": str(exc)},
+            failed_at=_utc_now(),
+        )
+        _append_event(
+            session_id,
+            turn_id,
+            "task.failed",
+            {
+                "status": "failed",
+                "code": "CEO_UNAVAILABLE",
+                "message": "The CEO task could not be dispatched.",
+                "retryable": True,
+            },
+        )
+        raise MobileApiError(
+            503,
+            "CEO_UNAVAILABLE",
+            "The CEO task could not be dispatched.",
+            retryable=True,
+        ) from exc
+    asyncio.create_task(
+        _monitor_turn(session_id, turn_id),
+        name=f"mobile-monitor:{turn_id}",
+    )
+    return True
+
+
 @router.post("/sessions", dependencies=[Depends(_require_auth)])
 async def create_session(payload: CreateSessionRequest) -> dict[str, Any]:
     client_session_id = _validate_id(
@@ -398,16 +648,24 @@ async def create_session(payload: CreateSessionRequest) -> dict[str, Any]:
 @router.get("/sessions/{session_id}", dependencies=[Depends(_require_auth)])
 async def get_session(session_id: str) -> dict[str, Any]:
     session = _session_or_error(session_id)
+    _expire_pending_approvals(session_id)
+    state = load_state()
     turns = [
         _public_turn(turn)
-        for turn in load_state()["mobile_turns"].values()
+        for turn in state["mobile_turns"].values()
         if turn["session_id"] == session_id
+    ]
+    approvals = [
+        _public_approval(approval)
+        for approval in state["mobile_approvals"].values()
+        if approval["session_id"] == session_id
     ]
     return {
         "session_id": session_id,
         "status": session["status"],
         "project_id": session["project_id"],
         "turns": turns,
+        "approvals": approvals,
     }
 
 
@@ -434,7 +692,7 @@ async def submit_turn(
             "SESSION_PROJECT_CONFLICT",
             "The turn project does not match its session.",
         )
-    project_path = _resolve_project(payload.project_id)
+    _resolve_project(payload.project_id)
     command_text = payload.input.text.strip()
     if not command_text or len(command_text) > _MAX_COMMAND_LENGTH:
         raise MobileApiError(
@@ -444,6 +702,8 @@ async def submit_turn(
         )
     command_hash = hashlib.sha256(command_text.encode("utf-8")).hexdigest()
     accepted_at = _utc_now()
+    approval_risk = _approval_risk_for_project(payload.project_id)
+    approval_ttl = _approval_ttl_seconds() if approval_risk is not None else None
 
     def reserve(state: dict[str, Any]) -> tuple[dict[str, Any], bool]:
         existing = state["mobile_turns"].get(turn_id)
@@ -459,6 +719,7 @@ async def submit_turn(
                 )
             return dict(existing), False
 
+        turn_status = "waiting_approval" if approval_risk is not None else "accepted"
         turn = {
             "turn_id": turn_id,
             "client_turn_id": turn_id,
@@ -470,91 +731,202 @@ async def submit_turn(
             "input_source": payload.input.source,
             "command_hash": command_hash,
             "client_context": payload.client_context,
-            "status": "accepted",
+            "status": turn_status,
             "submitted_at": accepted_at,
             "updated_at": accepted_at,
         }
         state["mobile_turns"][turn_id] = turn
+        approval: dict[str, Any] | None = None
+        if approval_risk is not None and approval_ttl is not None:
+            approval_id = f"apr_{uuid.uuid4().hex[:20]}"
+            expires_at_epoch = _epoch_now() + approval_ttl
+            approval = {
+                "approval_id": approval_id,
+                "session_id": session_id,
+                "turn_id": turn_id,
+                "risk_level": approval_risk,
+                "title": "Approve this reviewed command?",
+                "summary": (
+                    "This project requires explicit confirmation before "
+                    "the task is dispatched."
+                ),
+                "choices": (
+                    ["approve", "reject"]
+                    if approval_risk == "R2"
+                    else ["reject"]
+                ),
+                "status": "pending",
+                "created_at": accepted_at,
+                "updated_at": accepted_at,
+                "expires_at": _utc_at(expires_at_epoch),
+                "expires_at_epoch": expires_at_epoch,
+            }
+            turn["approval_id"] = approval_id
+            state["mobile_approvals"][approval_id] = approval
         _append_event_in_state(
             state,
             session_id=session_id,
             turn_id=turn_id,
             event_type="turn.accepted",
-            data={"status": "accepted"},
+            data={"status": turn_status},
         )
+        if approval is not None:
+            _append_event_in_state(
+                state,
+                session_id=session_id,
+                turn_id=turn_id,
+                event_type="approval.required",
+                data=_public_approval(approval),
+            )
         return dict(turn), True
 
-    turn, created = update_state(reserve)
-    if created or get_task(turn_id) is None:
-        backend = os.environ.get("EARCEO_BACKEND", "mock")
-
-        def on_status(event: Any) -> None:
-            _set_turn_status(turn_id, "working")
-            _append_event(
-                session_id,
-                turn_id,
-                "task.progress",
-                {
-                    "milestone": event.kind,
-                    "message": event.text,
-                    "progress_pct": {
-                        "progress": 25,
-                        "tool": 50,
-                        "message": 60,
-                        "done": 100,
-                        "error": 0,
-                    }.get(event.kind, 50),
-                },
-            )
-
-        try:
-            await receptionist.dispatch_async(
-                turn["input_text"],
-                backend=backend,
-                repo_path=str(project_path),
-                context={
-                    "task_id": turn_id,
-                    "session_id": session_id,
-                    "project_id": payload.project_id,
-                    "source": "earceo-android",
-                },
-                task_id=turn_id,
-                on_status=on_status,
-            )
-        except Exception as exc:
-            _set_turn_status(
-                turn_id,
-                "failed",
-                error={"type": type(exc).__name__, "message": str(exc)},
-                failed_at=_utc_now(),
-            )
-            _append_event(
-                session_id,
-                turn_id,
-                "task.failed",
-                {
-                    "status": "failed",
-                    "code": "CEO_UNAVAILABLE",
-                    "message": "The CEO task could not be dispatched.",
-                    "retryable": True,
-                },
-            )
-            raise MobileApiError(
-                503,
-                "CEO_UNAVAILABLE",
-                "The CEO task could not be dispatched.",
-                retryable=True,
-            ) from exc
-        asyncio.create_task(
-            _monitor_turn(session_id, turn_id),
-            name=f"mobile-monitor:{turn_id}",
-        )
+    turn, _ = update_state(reserve)
+    if turn["status"] == "accepted":
+        await _dispatch_turn(session_id, turn_id)
 
     current = load_state()["mobile_turns"][turn_id]
     return {
         "turn_id": turn_id,
         "status": current["status"],
         "submitted_at": current["submitted_at"],
+    }
+
+
+@router.post(
+    "/sessions/{session_id}/approvals/{approval_id}",
+    dependencies=[Depends(_require_auth)],
+)
+async def decide_approval(
+    session_id: str,
+    approval_id: str,
+    payload: ApprovalDecisionRequest,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> dict[str, Any]:
+    _session_or_error(session_id)
+    approval_id = _validate_id(approval_id, "approval_id")
+    decision_id = _validate_id(payload.client_decision_id, "client_decision_id")
+    if idempotency_key != decision_id:
+        raise MobileApiError(
+            400,
+            "INVALID_COMMAND",
+            "Idempotency-Key must equal client_decision_id.",
+        )
+    _expire_pending_approvals(session_id)
+    decided_at = _utc_now()
+
+    def decide(state: dict[str, Any]) -> dict[str, Any]:
+        approval = state["mobile_approvals"].get(approval_id)
+        if approval is None or approval["session_id"] != session_id:
+            return {"outcome": "not_found"}
+
+        existing_decision = state["mobile_decision_ids"].get(decision_id)
+        if existing_decision is not None and (
+            existing_decision["approval_id"] != approval_id
+            or existing_decision["decision"] != payload.decision
+        ):
+            return {"outcome": "decision_conflict"}
+
+        if approval["status"] == "expired":
+            return {"outcome": "expired", "approval": dict(approval)}
+        if approval["status"] in {"approved", "rejected"}:
+            if approval.get("decision") == payload.decision:
+                return {"outcome": "duplicate", "approval": dict(approval)}
+            return {"outcome": "approval_conflict", "approval": dict(approval)}
+        if approval["status"] != "pending":
+            return {"outcome": "approval_conflict", "approval": dict(approval)}
+        if approval["risk_level"] == "R3" and payload.decision == "approve":
+            return {"outcome": "forbidden", "approval": dict(approval)}
+
+        resolution = "approved" if payload.decision == "approve" else "rejected"
+        approval["status"] = resolution
+        approval["decision"] = payload.decision
+        approval["client_decision_id"] = decision_id
+        approval["decided_at"] = decided_at
+        approval["updated_at"] = decided_at
+        state["mobile_decision_ids"][decision_id] = {
+            "approval_id": approval_id,
+            "decision": payload.decision,
+        }
+
+        turn = state["mobile_turns"].get(approval["turn_id"])
+        if turn is not None and turn["status"] == "waiting_approval":
+            if payload.decision == "approve":
+                turn["status"] = "accepted"
+            else:
+                turn["status"] = "cancelled"
+                turn["cancelled_at"] = decided_at
+                turn["summary"] = "The task was rejected before dispatch."
+            turn["updated_at"] = decided_at
+
+        _append_event_in_state(
+            state,
+            session_id=session_id,
+            turn_id=approval["turn_id"],
+            event_type="approval.resolved",
+            data={
+                "approval_id": approval_id,
+                "status": resolution,
+                "decision": payload.decision,
+                "risk_level": approval["risk_level"],
+            },
+        )
+        if payload.decision == "reject":
+            _append_event_in_state(
+                state,
+                session_id=session_id,
+                turn_id=approval["turn_id"],
+                event_type="task.failed",
+                data={
+                    "status": "cancelled",
+                    "code": "TASK_REJECTED",
+                    "message": "The task was rejected before dispatch.",
+                    "retryable": False,
+                },
+            )
+        return {
+            "outcome": resolution,
+            "approval": dict(approval),
+            "turn_id": approval["turn_id"],
+        }
+
+    result = update_state(decide)
+    outcome = result["outcome"]
+    if outcome == "not_found":
+        raise MobileApiError(404, "APPROVAL_NOT_FOUND", "Approval not found.")
+    if outcome == "expired":
+        raise MobileApiError(
+            409,
+            "APPROVAL_EXPIRED",
+            "The approval expired before this decision.",
+        )
+    if outcome == "forbidden":
+        raise MobileApiError(
+            403,
+            "APPROVAL_NOT_ALLOWED",
+            "R3 operations cannot be approved through this client.",
+        )
+    if outcome == "decision_conflict":
+        raise MobileApiError(
+            409,
+            "DUPLICATE_DECISION",
+            "The decision id was already used for another approval or decision.",
+        )
+    if outcome == "approval_conflict":
+        raise MobileApiError(
+            409,
+            "APPROVAL_ALREADY_DECIDED",
+            "The approval already has a different decision.",
+        )
+
+    approval = result["approval"]
+    if outcome == "approved":
+        await _dispatch_turn(session_id, approval["turn_id"])
+    current = load_state()
+    current_approval = current["mobile_approvals"][approval_id]
+    current_turn = current["mobile_turns"][approval["turn_id"]]
+    return {
+        **_public_approval(current_approval),
+        "turn_status": current_turn["status"],
     }
 
 
@@ -575,7 +947,12 @@ async def stream_events(
     async def generate() -> AsyncIterator[str]:
         cursor_value = starting_cursor
         heartbeat_at = time.monotonic()
+        approval_check_at = 0.0
         while True:
+            monotonic_now = time.monotonic()
+            if monotonic_now >= approval_check_at:
+                _expire_pending_approvals(session_id)
+                approval_check_at = monotonic_now + 1.0
             events = _events_after(session_id, cursor_value)
             for event in events:
                 cursor_value = event["event_id"]
@@ -588,8 +965,8 @@ async def stream_events(
                 return
             if await request.is_disconnected():
                 return
-            if time.monotonic() - heartbeat_at >= 15:
-                heartbeat_at = time.monotonic()
+            if monotonic_now - heartbeat_at >= 15:
+                heartbeat_at = monotonic_now
                 yield ": keep-alive\n\n"
             await asyncio.sleep(0.25)
 
@@ -610,11 +987,68 @@ async def stream_events(
 )
 async def cancel_turn(session_id: str, turn_id: str) -> dict[str, Any]:
     _session_or_error(session_id)
+    _expire_pending_approvals(session_id)
     turn = load_state()["mobile_turns"].get(turn_id)
     if turn is None or turn["session_id"] != session_id:
         raise MobileApiError(404, "TURN_NOT_FOUND", "Turn not found.")
     if turn["status"] in {"completed", "failed", "cancelled"}:
         return {"turn_id": turn_id, "status": turn["status"]}
+    if turn["status"] == "waiting_approval":
+        cancelled_at = _utc_now()
+
+        def cancel_waiting(state: dict[str, Any]) -> str:
+            current = state["mobile_turns"].get(turn_id)
+            if current is None:
+                return "missing"
+            if current["status"] != "waiting_approval":
+                return str(current["status"])
+            current["status"] = "cancelled"
+            current["cancelled_at"] = cancelled_at
+            current["updated_at"] = cancelled_at
+            current["summary"] = "The task was cancelled before approval."
+            approval_id = current.get("approval_id")
+            approval = state["mobile_approvals"].get(approval_id)
+            if approval is not None and approval["status"] == "pending":
+                approval["status"] = "rejected"
+                approval["decision"] = "reject"
+                approval["decided_at"] = cancelled_at
+                approval["updated_at"] = cancelled_at
+                _append_event_in_state(
+                    state,
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    event_type="approval.resolved",
+                    data={
+                        "approval_id": approval_id,
+                        "status": "rejected",
+                        "decision": "reject",
+                        "risk_level": approval["risk_level"],
+                    },
+                )
+            _append_event_in_state(
+                state,
+                session_id=session_id,
+                turn_id=turn_id,
+                event_type="task.failed",
+                data={
+                    "status": "cancelled",
+                    "code": "TASK_CANCELLED",
+                    "message": "The task was cancelled before approval.",
+                    "retryable": False,
+                },
+            )
+            return "cancelled"
+
+        status = update_state(cancel_waiting)
+        if status == "missing":
+            raise MobileApiError(404, "TURN_NOT_FOUND", "Turn not found.")
+        if status != "cancelled":
+            raise MobileApiError(
+                409,
+                "APPROVAL_ALREADY_DECIDED",
+                "The approval changed state before cancellation completed.",
+            )
+        return {"turn_id": turn_id, "status": status}
     if not await receptionist.cancel(turn_id):
         raise MobileApiError(
             409,

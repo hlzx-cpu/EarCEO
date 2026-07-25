@@ -8,7 +8,8 @@ Updated: 2026-07-25
 - Local checkout: `/Users/hanliangzhaoxuan/Documents/Advx26`
 - GitHub default branch: `codex/android-sdk-baseline`
 - Baseline commit: `d571564`
-- Current development branch: `codex/android-restart-recovery`
+- Restart-recovery milestone commit: `60572b1`
+- Current development branch: `codex/approval-state-contract`
 - Development continues only in this monorepo.
 - The old `/Users/hanliangzhaoxuan/Developer/AdvX26/EarCEO-Backend`
   checkout is historical and must not receive new work.
@@ -21,7 +22,7 @@ checkout.
 
 The repository currently passes:
 
-- backend: 82 tests;
+- backend: 90 tests;
 - Android: `testDebugUnitTest`, `assembleDebug`, and `lintDebug`;
 - public-repository secret/vendor-artifact safety check;
 - localhost Gateway smoke test covering session creation, turn submission,
@@ -70,6 +71,9 @@ Implemented reliability properties:
 - uncertain submissions retain the stable turn ID without retaining transcript
   text;
 - bounded exponential SSE reconnect with jitter;
+- server-owned R2/R3 pre-dispatch approval policy;
+- durable, expiring and single-use approval decisions;
+- atomic approval-to-dispatch claiming and idempotent duplicate responses;
 - transcript, credentials, WAV, AAR, and generated APK exclusion from logs/Git.
 
 ## Completed milestone
@@ -91,7 +95,7 @@ Implemented files:
 - JVM tests for serialization, privacy, cursor advancement, terminal clearing,
   stable turn IDs and reconnect timing.
 
-`./scripts/test-all.sh` passes with 82 backend tests plus Android unit tests,
+`./scripts/test-all.sh` passes with 90 backend tests plus Android unit tests,
 APK assembly, lint and public-repository safety checks.
 
 ### Part B — Huawei LAN validation
@@ -130,6 +134,25 @@ on PATH and failed before launching a subprocess; restarting it with
 `/opt/homebrew/bin` in PATH resolved the environment issue. The ignored Gateway
 configuration was returned to `mock` after validation.
 
+### Part D — backend approval contract
+
+The first approval phase is implemented on `codex/approval-state-contract`:
+
+- optional `EARCEO_APPROVAL_RISKS` is a server-owned project-to-risk mapping;
+- R2/R3 turns stop at durable `waiting_approval` before a task or subprocess is
+  created;
+- approval records and `approval.required` events are persisted atomically;
+- R2 approve/reject decisions are idempotent and single-use;
+- expiry, conflicting decisions, cross-session IDs and reused decision IDs are
+  rejected safely;
+- R3 exposes only reject and cannot be approved through the mobile API;
+- approval resolution, cancellation and expiration are queryable and emitted
+  through SSE;
+- default `{}` policy preserves the existing Android path.
+
+This is deliberately a pre-dispatch gate. Action-specific mid-task adapter
+pauses and the Android approval card remain separate phases.
+
 ## Acceptance criteria
 
 All criteria for this milestone passed:
@@ -144,10 +167,16 @@ All criteria for this milestone passed:
 
 ## Next objective
 
-No further product feature was started. Ask for a newly agreed scope before
-implementing approval cards, an offline queue, TTS, foreground service or
-product UI. The recommended next product slice is approval-state/response
-semantics with backend tests, followed by a minimal Android approval card.
+Implement the minimal Android approval state and card against the completed
+backend contract:
+
+1. parse approvals from session query and SSE;
+2. persist only approval ID and safe metadata needed for restart recovery;
+3. render risk, title, summary, expiry and allowed choices;
+4. send a stable client decision ID through explicit screen taps;
+5. recover `waiting_approval` after process restart;
+6. keep approval policy disabled during device testing until the Android path
+   is ready.
 
 ## Explicitly deferred
 
@@ -158,7 +187,6 @@ milestone has passed:
 - PCM/WAV upload to the backend;
 - backend ASR;
 - Android TTS and half-duplex playback;
-- approval cards;
 - public Internet deployment;
 - production authentication;
 - polished Compose UI.
@@ -178,6 +206,8 @@ device connection.
 - `android/app/src/main/java/com/earceo/app/ActiveTurnStore.kt`
 - `android/app/src/main/java/com/earceo/app/SseReconnectPolicy.kt`
 - `backend/web/mobile_api.py`
+- `backend/receptionist/state.py`
+- `backend/receptionist/tests/test_mobile_api.py`
 - `backend/receptionist/core.py`
 - `scripts/test-all.sh`
 
@@ -190,8 +220,11 @@ device connection.
 > Android 活跃任务与 SSE cursor 持久化、启动恢复、session 查询和指数退避
 > 重连已经实现；华为 Mate 60 + iFLYBUDS Pro 3 + Mac 的个人热点原生 LAN
 > slow-mock 闭环已经覆盖完成、取消、杀应用恢复和 cursor 续传；随后
-> `claude-code` 也只在 allow-list 的一次性仓库中验证通过。自动化基线为后端
-> 82 个测试通过，Android test/assemble/lint 通过。下一步尚未开始；请先确认
-> 新的产品范围。建议从审批状态/响应契约和后端测试开始。不要擅自做 HFP、
-> PCM/WAV 上传、后端 ASR、Android TTS、正式部署或 UI 大改。所有代码继续
-> 放在 EarCEO 单仓库。
+> `claude-code` 也只在 allow-list 的一次性仓库中验证通过。后端已经实现默认
+> 关闭的服务端 R2/R3 预派发审批策略、持久化审批、过期、单次幂等决策、
+> `approval.required/resolved` SSE 和批准后原子派发。自动化基线为后端
+> 90 个测试通过，Android test/assemble/lint 通过。下一阶段只实现最小 Android
+> 审批状态与卡片、稳定 decision ID 和重启恢复；不要同时做离线队列、HFP、
+> PCM/WAV 上传、后端 ASR、Android TTS、正式部署或 UI 大改。设备测试前保持
+> `EARCEO_APPROVAL_RISKS={}`，直到 Android 审批路径完整。所有代码继续放在
+> EarCEO 单仓库。

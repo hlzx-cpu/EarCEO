@@ -64,6 +64,7 @@ Implemented:
 - bounded SSE reconnect with exponential backoff and jitter
 - an in-repository CEO Gateway with project allow-listing and idempotent turns
 - a durable backend task lifecycle shared by Web, MCP and Android
+- server-owned R2/R3 approval gates with durable, expiring decisions
 
 Real-device validation:
 
@@ -262,7 +263,8 @@ Risk policy:
 - [x] Task cancellation
 - [x] Huawei real-device LAN integration
 - [x] Real `claude-code` disposable-repository integration
-- [ ] Approval cards and response flow
+- [x] Backend approval persistence and response contract
+- [ ] Android approval card
 - [ ] Android TTS with half-duplex audio
 - [x] Active-turn persistence, cursor recovery and bounded reconnect
 - [ ] One-command offline queue
