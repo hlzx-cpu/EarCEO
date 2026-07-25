@@ -82,6 +82,7 @@
     <string name="backend_restored_retry">CEO Gateway：上次提交结果未知；请重新输入同一命令并使用原任务 ID 重试</string>
     <string name="backend_sending_command">CEO Gateway：正在持久化提交…</string>
     <string name="backend_command_accepted">CEO Gateway：任务已接受，等待进度…</string>
+    <string name="backend_waiting_approval">CEO Gateway：任务等待你的明确审批</string>
     <string name="backend_progress">CEO Gateway：%1$d%%\n%2$s</string>
     <string name="backend_completed">CEO Gateway：任务已完成</string>
     <string name="backend_failed">CEO Gateway：任务失败 · %1$s</string>
@@ -92,6 +93,16 @@
     <string name="backend_cancelled">CEO Gateway：任务已取消</string>
     <string name="backend_cancelled_result">任务已按用户请求取消</string>
     <string name="no_active_command">当前没有可取消的任务</string>
+    <string name="approval_section">任务审批</string>
+    <string name="approval_approve">批准</string>
+    <string name="approval_reject">拒绝</string>
+    <string name="approval_risk">风险等级：%1$s</string>
+    <string name="approval_expires">有效期至：%1$s</string>
+    <string name="approval_not_available">当前审批已失效或不允许这个决定</string>
+    <string name="approval_different_decision_pending">已有另一个审批决定正在重试，不能更改</string>
+    <string name="approval_sending">CEO Gateway：正在提交“%1$s”决定…</string>
+    <string name="approval_request_failed">CEO Gateway：审批提交失败 · %1$s；可点击同一决定重试</string>
+    <string name="approval_refreshing">CEO Gateway：审批返回 %1$s，正在刷新服务端状态…</string>
     <string name="initialize_first">请先初始化 SDK</string>
     <string name="connect_first">请先连接耳机</string>
     <string name="bluetooth_permission_denied">未获得附近设备/定位权限，无法扫描和连接耳机</string>

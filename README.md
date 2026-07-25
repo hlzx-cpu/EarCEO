@@ -65,6 +65,8 @@ Implemented:
 - an in-repository CEO Gateway with project allow-listing and idempotent turns
 - a durable backend task lifecycle shared by Web, MCP and Android
 - server-owned R2/R3 approval gates with durable, expiring decisions
+- a minimal Android approval card with explicit screen-tap decisions
+- restart-safe approval metadata and stable decision IDs for safe retries
 
 Real-device validation:
 
@@ -100,6 +102,7 @@ Speak command
   → collect sentence-level Final results
   → stop and review one command draft
   → explicitly submit final text to CEO Gateway
+  → approve or reject when the server-owned policy requires it
   → receive accepted/progress/completed events
   → show result on Android
 ```
@@ -140,6 +143,7 @@ android/
     CommandDraft.kt       Final sentence aggregation + idempotent turn state
     EarCeoApiClient.kt    Authenticated REST + SSE client
     ActiveTurnStore.kt    Non-sensitive active-turn and cursor persistence
+    ApprovalStore.kt      Safe approval metadata + stable decision persistence
     SseReconnectPolicy.kt Bounded exponential reconnect delays with jitter
 backend/
   receptionist/           Durable task lifecycle and harness adapters
@@ -264,7 +268,7 @@ Risk policy:
 - [x] Huawei real-device LAN integration
 - [x] Real `claude-code` disposable-repository integration
 - [x] Backend approval persistence and response contract
-- [ ] Android approval card
+- [x] Android approval card and restart recovery
 - [ ] Android TTS with half-duplex audio
 - [x] Active-turn persistence, cursor recovery and bounded reconnect
 - [ ] One-command offline queue

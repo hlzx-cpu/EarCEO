@@ -9,7 +9,8 @@ Updated: 2026-07-25
 - GitHub default branch: `codex/android-sdk-baseline`
 - Baseline commit: `d571564`
 - Restart-recovery milestone commit: `60572b1`
-- Current development branch: `codex/approval-state-contract`
+- Backend approval milestone commit: `f485d80`
+- Current development branch: `codex/android-approval-card`
 - Development continues only in this monorepo.
 - The old `/Users/hanliangzhaoxuan/Developer/AdvX26/EarCEO-Backend`
   checkout is historical and must not receive new work.
@@ -74,6 +75,8 @@ Implemented reliability properties:
 - server-owned R2/R3 pre-dispatch approval policy;
 - durable, expiring and single-use approval decisions;
 - atomic approval-to-dispatch claiming and idempotent duplicate responses;
+- Android R2 approve/reject and R3 reject-only rendering;
+- restart-safe public approval metadata and stable client decision IDs;
 - transcript, credentials, WAV, AAR, and generated APK exclusion from logs/Git.
 
 ## Completed milestone
@@ -151,7 +154,28 @@ The first approval phase is implemented on `codex/approval-state-contract`:
 - default `{}` policy preserves the existing Android path.
 
 This is deliberately a pre-dispatch gate. Action-specific mid-task adapter
-pauses and the Android approval card remain separate phases.
+pauses remain a separate phase.
+
+### Part E — Android approval card and recovery
+
+The minimal Android approval phase is implemented on
+`codex/android-approval-card`:
+
+- `waiting_approval` is an active, restart-recoverable command state;
+- session query and `approval.required` SSE restore only public approval
+  metadata;
+- the diagnostic UI shows risk, title, summary, expiry and server-allowed
+  choices without a broad redesign;
+- R2 exposes explicit approve/reject taps while R3 never exposes approve;
+- the client decision ID is synchronously persisted before the network call,
+  reused after request uncertainty or process restart, and cannot switch to the
+  opposite decision;
+- `approval.resolved`, terminal query and task events clear approval recovery
+  state safely.
+
+Automated Android unit/build/lint validation is complete. Physical-device
+approval scenarios have not yet been claimed; the tracked/default
+`EARCEO_APPROVAL_RISKS={}` policy remains unchanged.
 
 ## Acceptance criteria
 
@@ -167,16 +191,17 @@ All criteria for this milestone passed:
 
 ## Next objective
 
-Implement the minimal Android approval state and card against the completed
-backend contract:
+Validate the completed approval path on Huawei Mate 60 without widening the
+implementation scope:
 
-1. parse approvals from session query and SSE;
-2. persist only approval ID and safe metadata needed for restart recovery;
-3. render risk, title, summary, expiry and allowed choices;
-4. send a stable client decision ID through explicit screen taps;
-5. recover `waiting_approval` after process restart;
-6. keep approval policy disabled during device testing until the Android path
-   is ready.
+1. temporarily enable an R2 policy only in ignored local configuration;
+2. verify approve dispatches exactly once and reject never dispatches;
+3. force-stop/reopen while `waiting_approval` and while one decision response
+   is uncertain, confirming the same approval and decision ID are reused;
+4. verify expiry becomes terminal and R3 renders reject only;
+5. return ignored local policy to `{}` after the mock-device test;
+6. if a real-agent gate is needed, use only a new disposable allow-listed
+   repository.
 
 ## Explicitly deferred
 
@@ -223,8 +248,10 @@ device connection.
 > `claude-code` 也只在 allow-list 的一次性仓库中验证通过。后端已经实现默认
 > 关闭的服务端 R2/R3 预派发审批策略、持久化审批、过期、单次幂等决策、
 > `approval.required/resolved` SSE 和批准后原子派发。自动化基线为后端
-> 90 个测试通过，Android test/assemble/lint 通过。下一阶段只实现最小 Android
-> 审批状态与卡片、稳定 decision ID 和重启恢复；不要同时做离线队列、HFP、
-> PCM/WAV 上传、后端 ASR、Android TTS、正式部署或 UI 大改。设备测试前保持
-> `EARCEO_APPROVAL_RISKS={}`，直到 Android 审批路径完整。所有代码继续放在
-> EarCEO 单仓库。
+> 90 个测试通过，Android test/assemble/lint 通过。Android 现已实现最小审批
+> 卡片、R2 显式批准/拒绝、R3 拒绝-only、仅公开元数据持久化、稳定 decision
+> ID 和 `waiting_approval` 重启恢复。下一阶段只在 Huawei Mate 60 + iFLYBUDS
+> Pro 3 + Mac 的个人热点局域网 mock 上验证批准、拒绝、过期、R3 与杀应用
+> 恢复；临时风险策略只写入 ignored 本地配置，结束后恢复 `{}`。如需真实
+> agent gate，只用新的 allow-list 一次性仓库。不要同时做离线队列、HFP、
+> PCM/WAV 上传、后端 ASR、Android TTS、正式部署或 UI 大改。

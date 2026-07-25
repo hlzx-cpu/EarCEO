@@ -222,6 +222,22 @@ task created only `CLAUDE_GATE_OK.txt`, containing the requested one-line proof
 plus a trailing newline. The Gateway configuration was returned to `mock` after
 the test. No EarCEO source file was exposed to the Claude subprocess.
 
+### Android approval-card automated baseline
+
+The Android approval client now:
+
+- treats `waiting_approval` as an active recoverable turn;
+- restores public approval metadata from session query or SSE;
+- persists a stable decision ID before sending approve/reject;
+- allows only the same decision to retry after an uncertain response;
+- hides approve for R3 and clears approval state after resolution.
+
+JVM tests cover safe-field persistence, stable decision reuse, conflicting
+retry prevention, R3 reject-only behavior, and command/turn recovery state.
+`testDebugUnitTest`, `assembleDebug`, and `lintDebug` pass. This is automated
+evidence only: a Huawei approval-card physical-device run is the next separate
+acceptance step, and the default risk mapping remains `{}` meanwhile.
+
 ## Export and inspect a PCM-only recording
 
 After stopping a live recording, EarCEO displays the WAV filename, duration and

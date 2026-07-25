@@ -55,6 +55,19 @@ class ActiveTurnStoreTest {
         assertNull(store.load())
     }
 
+    @Test
+    fun waitingApprovalRemainsAnActiveRecoverableStatus() {
+        val state = ActiveTurnState(
+            sessionId = "ses-1",
+            turnId = "turn-approval",
+            status = "waiting_approval",
+            lastEventId = "evt-approval",
+        )
+
+        assertTrue(state.status in ActiveTurnState.ACTIVE_STATUSES)
+        assertFalse(state.isTerminal)
+    }
+
     private class FakeRecoveryPreferences : RecoveryPreferences {
         val values = mutableMapOf<String, String>()
 
