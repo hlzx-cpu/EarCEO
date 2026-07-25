@@ -192,12 +192,14 @@ Acceptance:
 
 ### P1 — required for a credible product demo
 
-- [ ] SSE progress
-- [ ] event cursor reconnect
+- [x] SSE progress
+- [x] in-process event cursor reconnect
+- [ ] persist the active turn and event cursor across app restart
+- [ ] bounded reconnect with exponential backoff and jitter
 - [ ] approval card
 - [ ] Android TTS
 - [ ] half-duplex state machine
-- [ ] active-task recovery after restart
+- [ ] one-command offline queue
 
 ### P2 — post-demo hardening
 
@@ -240,13 +242,16 @@ primary integration device.
 
 Do these in order:
 
-1. review `backend-contract.md` with the `coding-vibe` owner;
-2. agree on `project_id`, gateway URL, development token and event names;
-3. implement Android command aggregation and Review state;
-4. have the backend owner implement only the three initial operations:
-   session creation, turn submission and completion event;
-5. run one deterministic demo task before adding TTS or UI polish.
+1. persist the active session ID, turn ID and latest SSE event ID on Android;
+2. restore an accepted/working task after activity or process restart without
+   resubmitting it;
+3. add bounded SSE reconnect with exponential backoff and jitter;
+4. run the complete Huawei Mate 60 + iFLYBUDS + Mac LAN loop against `mock`;
+5. repeat one safe task against `claude-code` in a disposable repository.
 
 The first integration task should be safe, visible and repeatable—for example,
 asking the agent team to add or update a small health endpoint in a disposable
 demo repository.
+
+The detailed continuation brief and ready-to-copy prompt are in
+[`next-session-handoff.md`](next-session-handoff.md).
