@@ -80,6 +80,16 @@ codex/audio-stream-uplink
 检查通过，没有文本级 merge conflict。它们仍是 draft 和堆叠 PR；不要因为默认
 分支较旧，就把后续提交错误地 rebase 到 `d571564` 并丢掉中间里程碑。
 
+GitHub 默认分支 `codex/android-sdk-baseline` 已启用 branch protection：
+
+- 规则对管理员生效；
+- 禁止 force-push；
+- 禁止删除分支；
+- 暂不强制 PR review 或 required status check，因此单人维护和当前堆叠 PR
+  不会被锁死；
+- `.github/workflows/public-repo-safety.yml` 仍会在 push 和 pull request 时运行
+  `secret-boundary`。
+
 如果之后要合并，顺序必须从底向上：
 
 1. 先保证后端审批合同分支已经进入它的目标分支；
@@ -380,16 +390,14 @@ android/app/libs/VisionHeadsetOpen-v1.0.0.aar
 cp android/local.properties.example android/local.properties
 ```
 
-至少填写：
+至少在本地填写这些键：
 
-```properties
-sdk.dir=/Users/<new-user>/Library/Android/sdk
-viaim.appKey=<local secret>
-viaim.appSecret=<local secret>
-earceo.backendUrl=http://<reachable-server>:8787
-earceo.apiToken=<same as backend>
-earceo.projectId=adventurex-demo
-```
+- `sdk.dir`：新电脑的 Android SDK 绝对路径；
+- `viaim.appKey`：本地保存的 Viaim AppKey；
+- `viaim.appSecret`：本地保存的 Viaim AppSecret；
+- `earceo.backendUrl`：手机可访问的 EarCEO server 地址；
+- `earceo.apiToken`：与后端一致的本地 token；
+- `earceo.projectId`：默认开发值为 `adventurex-demo`。
 
 LiveKit 配置是待移除的 spike 配置，不要在新电脑创建长期 LiveKit token。
 
