@@ -18,6 +18,12 @@ iFLYBUDS command
 
 TTS, background operation and polished UI follow after this loop is reliable.
 
+An independent experimental VoIP workstream is documented in
+[`android-voip-development.md`](android-voip-development.md). It uses Viaim PCM
+when healthy, WebRTC AudioRecord as fallback, Core-Telecom for the Android call
+lifecycle, and LiveKit for bidirectional media. It does not change the CEO
+Gateway text-command contract.
+
 ## Module ownership
 
 | Workstream | `android/` | `backend/` | Shared |

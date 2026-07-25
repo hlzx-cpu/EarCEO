@@ -9,6 +9,7 @@ import android.content.pm.PackageManager
 import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import android.text.InputType
 import android.util.Log
 import android.view.Gravity
@@ -35,12 +36,23 @@ import com.vision.headset.sdk.OnResultListener
 import com.vision.headset.sdk.entity.PowerEntity
 import com.vision.headset.sdk.entity.RecordDataEntity
 import com.vision.headset.sdk.enums.GaiaConnectStatus
+import com.earceo.app.audio.Pcm16FrameBuffer
+import com.earceo.app.audio.ViaimAudioBufferCallback
+import com.earceo.app.call.CallNotificationManager
+import com.earceo.app.call.CallSessionCoordinator
+import com.earceo.app.rtc.LiveKitCallTransport
+import com.earceo.app.rtc.LiveKitRoomCredentials
+import com.earceo.app.telecom.TelecomCallCoordinator
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.Executors
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import okhttp3.sse.EventSource
 
 /**
@@ -64,6 +76,7 @@ class MainActivity : Activity() {
     private lateinit var pcmStatus: TextView
     private lateinit var recordingFileStatus: TextView
     private lateinit var backendStatus: TextView
+    private lateinit var callStatus: TextView
     private lateinit var backendResult: TextView
     private lateinit var partialText: TextView
     private lateinit var transcriptText: EditText
@@ -74,6 +87,8 @@ class MainActivity : Activity() {
     private lateinit var submitButton: Button
     private lateinit var discardButton: Button
     private lateinit var cancelButton: Button
+    private lateinit var startCallButton: Button
+    private lateinit var endCallButton: Button
     private lateinit var approvalCard: LinearLayout
     private lateinit var approvalSection: TextView
     private lateinit var approvalRisk: TextView
@@ -97,6 +112,12 @@ class MainActivity : Activity() {
     private var backendRecoveryInProgress = false
     private var approvalDecisionInFlight = false
     private val reconnectPolicy = SseReconnectPolicy()
+    private val callScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val viaimCallAudioCallback = ViaimAudioBufferCallback(Pcm16FrameBuffer())
+    private val callNotificationManager by lazy { CallNotificationManager(applicationContext) }
+    private var callSession: CallSessionCoordinator? = null
+    @Volatile private var callViaimCaptureActive = false
+    @Volatile private var callState = CallSessionCoordinator.State.IDLE
 
     private val apiClient: EarCeoApiClient by lazy {
         EarCeoApiClient(
@@ -151,6 +172,7 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(buildInterface())
+        initializeCallStack()
         refreshButtons()
         initializeSdk()
         recoverBackendTask()
@@ -165,9 +187,16 @@ class MainActivity : Activity() {
         }
         finishWavRecording(updateUi = false)
         closeEventStream()
+        callSession?.close()
+        callScope.cancel()
         apiClient.shutdown()
         audioFileExecutor.shutdown()
         super.onDestroy()
+    }
+
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        if (intent?.action == CallNotificationManager.ACTION_END_CALL) endCall()
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
@@ -262,12 +291,14 @@ class MainActivity : Activity() {
                 getString(R.string.backend_not_configured)
             },
         )
+        callStatus = statusCard(getString(R.string.call_idle))
         content.addView(sdkStatus)
         content.addView(capabilityStatus)
         content.addView(headsetStatus)
         content.addView(pcmStatus)
         content.addView(recordingFileStatus)
         content.addView(backendStatus)
+        content.addView(callStatus)
 
         initializeButton = actionButton(getString(R.string.initialize_sdk)) { initializeSdk() }
         connectButton = actionButton(getString(R.string.connect_headset)) { connectHeadset() }
@@ -275,10 +306,14 @@ class MainActivity : Activity() {
         exportRecordingButton = actionButton(getString(R.string.export_recording)) {
             exportLatestRecording()
         }
+        startCallButton = actionButton(getString(R.string.start_livekit_call)) { startCall() }
+        endCallButton = actionButton(getString(R.string.end_livekit_call)) { endCall() }
         content.addView(initializeButton.withMargins(top = 12))
         content.addView(connectButton)
         content.addView(recordButton)
         content.addView(exportRecordingButton)
+        content.addView(startCallButton.withMargins(top = 12))
+        content.addView(endCallButton)
 
         content.addView(sectionTitle(getString(R.string.live_partial)))
         partialText = text(getString(R.string.no_partial_result), 18f, Color.rgb(68, 83, 118), false)
@@ -360,6 +395,137 @@ class MainActivity : Activity() {
         backendResult.setBackgroundColor(Color.WHITE)
         content.addView(backendResult)
         return scroll
+    }
+
+    private fun initializeCallStack() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            callStatus.text = getString(R.string.call_requires_android_o)
+            return
+        }
+        callSession = createCallSession()
+    }
+
+    @androidx.annotation.RequiresApi(Build.VERSION_CODES.O)
+    private fun createCallSession(): CallSessionCoordinator {
+        return CallSessionCoordinator(
+            scope = callScope,
+            telecom = TelecomCallCoordinator(applicationContext),
+            media = LiveKitCallTransport(applicationContext, viaimCallAudioCallback),
+            monotonicMillis = SystemClock::elapsedRealtime,
+            onError = {
+                Log.e(TAG, "Call session failed", it)
+            },
+            onStateChanged = { state ->
+                ui {
+                    callState = state
+                    callStatus.text = when (state) {
+                        CallSessionCoordinator.State.IDLE -> getString(R.string.call_idle)
+                        CallSessionCoordinator.State.CONNECTING_MEDIA ->
+                            getString(R.string.call_connecting_livekit)
+                        CallSessionCoordinator.State.REGISTERING_TELECOM ->
+                            getString(R.string.call_registering_telecom).also {
+                                callNotificationManager.showOngoingCall()
+                            }
+                        CallSessionCoordinator.State.ACTIVE -> getString(R.string.call_active)
+                        CallSessionCoordinator.State.HELD -> getString(R.string.call_held)
+                        CallSessionCoordinator.State.ENDING -> getString(R.string.call_ending)
+                        CallSessionCoordinator.State.FAILED -> getString(R.string.call_failed)
+                    }
+                    if (
+                        state == CallSessionCoordinator.State.IDLE ||
+                        state == CallSessionCoordinator.State.FAILED
+                    ) {
+                        callNotificationManager.cancel()
+                        stopViaimCallCapture()
+                    }
+                    refreshButtons()
+                }
+            },
+        )
+    }
+
+    private fun startCall() {
+        val session = callSession ?: run {
+            toast(getString(R.string.call_requires_android_o))
+            return
+        }
+        val credentials = LiveKitRoomCredentials(
+            url = BuildConfig.LIVEKIT_URL,
+            token = BuildConfig.LIVEKIT_TOKEN,
+        )
+        if (!credentials.configured) {
+            toast(getString(R.string.livekit_not_configured))
+            return
+        }
+        if (recording) {
+            toast(getString(R.string.stop_recording_before_call))
+            return
+        }
+        val callPermissions = buildList {
+            add(Manifest.permission.RECORD_AUDIO)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                add(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }.toTypedArray()
+        if (!ensurePermissions(
+                callPermissions,
+                REQUEST_MICROPHONE,
+            ) {
+                startCall()
+            }
+        ) {
+            return
+        }
+
+        startViaimCallCaptureIfAvailable()
+        session.startOutgoing(credentials)
+        refreshButtons()
+    }
+
+    private fun endCall() {
+        callSession?.end()
+    }
+
+    private fun startViaimCallCaptureIfAvailable() {
+        val connected = headsetReady || VHOManager.isConnectSPP()
+        callSession?.onViaimConnectionChanged(connected)
+        if (!connected) return
+
+        VHOManager.configure(null)
+        VHOManager.setRecordListener(null)
+        VHOManager.setPcmListener(object : OnResultListener<RecordDataEntity> {
+            override fun onResult(data: RecordDataEntity?) {
+                val audio = data?.audioData ?: return
+                if (audio.isNotEmpty()) callSession?.onViaimPcm(audio)
+            }
+
+            override fun onError(code: Int, msg: String?) {
+                Log.w(TAG, "Viaim call PCM failed: $code $msg")
+                callSession?.onViaimConnectionChanged(false)
+                stopViaimCallCapture()
+            }
+        })
+        runCatching {
+            VHOManager.initSBC()
+            VHOManager.startLiveRecord()
+        }.onSuccess {
+            callViaimCaptureActive = true
+        }.onFailure {
+            Log.w(TAG, "Viaim call capture unavailable; using system microphone", it)
+            VHOManager.setPcmListener(null)
+            callSession?.onViaimConnectionChanged(false)
+        }
+    }
+
+    private fun stopViaimCallCapture() {
+        if (!callViaimCaptureActive) return
+        callViaimCaptureActive = false
+        callSession?.onViaimConnectionChanged(false)
+        audioFileExecutor.execute {
+            runCatching { VHOManager.stopLiveRecord() }
+                .onFailure { Log.w(TAG, "Unable to stop Viaim call capture", it) }
+            VHOManager.setPcmListener(null)
+        }
     }
 
     private fun initializeSdk() {
@@ -530,6 +696,7 @@ class MainActivity : Activity() {
                         )
                     GaiaConnectStatus.DISCONNECTED, GaiaConnectStatus.DISCONNECTING -> {
                         headsetReady = false
+                        callSession?.onViaimConnectionChanged(false)
                         headsetStatus.text = getString(R.string.headset_disconnected)
                     }
                     else -> Unit
@@ -545,6 +712,7 @@ class MainActivity : Activity() {
 
     private fun onHeadsetReady(targetMac: String?) {
         headsetReady = true
+        callSession?.onViaimConnectionChanged(true)
         runCatching { VHOManager.initSBC() }
             .onFailure { Log.w(TAG, "initSBC failed", it) }
         headsetStatus.text = getString(
@@ -1611,14 +1779,22 @@ class MainActivity : Activity() {
 
     private fun refreshButtons() {
         val commandActive = commandDraft.isActive()
+        val callIdle = callState == CallSessionCoordinator.State.IDLE ||
+            callState == CallSessionCoordinator.State.FAILED
         initializeButton.isEnabled = !recording && !commandActive
-        connectButton.isEnabled = sdkReady && !recording && !commandActive
+        connectButton.isEnabled = sdkReady && !recording && !commandActive && callIdle
         recordButton.isEnabled =
             (headsetReady || VHOManager.isConnectSPP()) &&
             !wavFinalizing &&
-            !commandActive
+            !commandActive &&
+            callIdle
         exportRecordingButton.isEnabled =
             latestWavFile?.isFile == true && !recording && !wavFinalizing
+        if (::startCallButton.isInitialized) {
+            startCallButton.isEnabled =
+                callSession != null && callIdle && !recording && !commandActive
+            endCallButton.isEnabled = !callIdle
+        }
         if (::submitButton.isInitialized) {
             submitButton.isEnabled = apiClient.configured &&
                 !backendRecoveryInProgress &&

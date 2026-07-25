@@ -7,6 +7,8 @@
     <string name="start_recording">开始现场录音</string>
     <string name="stop_recording">停止录音</string>
     <string name="export_recording">导出最近录音 WAV</string>
+    <string name="start_livekit_call">开始 LiveKit 通话</string>
+    <string name="end_livekit_call">结束通话</string>
     <string name="clear_transcript">清空转写</string>
     <string name="sdk_waiting">SDK：等待初始化</string>
     <string name="sdk_initializing">SDK：正在初始化…</string>
@@ -67,6 +69,19 @@
     <string name="no_backend_result">尚无 CEO 结果</string>
     <string name="backend_ready">CEO Gateway：已配置 · project=%1$s</string>
     <string name="backend_not_configured">CEO Gateway：未配置，请在 local.properties 填写地址和令牌</string>
+    <string name="call_idle">通话：空闲（Viaim 优先，系统麦克风回退）</string>
+    <string name="call_connecting_livekit">通话：正在连接 LiveKit/WebRTC…</string>
+    <string name="call_registering_telecom">通话：媒体已连接，正在注册系统通话…</string>
+    <string name="call_active">通话：已接入 Android Telecom</string>
+    <string name="call_held">通话：系统要求保持/暂停</string>
+    <string name="call_ending">通话：正在结束…</string>
+    <string name="call_failed">通话：启动失败，请检查 LiveKit 配置和日志</string>
+    <string name="call_requires_android_o">Core-Telecom 通话需要 Android 8.0 或更高版本</string>
+    <string name="livekit_not_configured">请在 local.properties 配置 livekit.url 和临时 devToken</string>
+    <string name="stop_recording_before_call">请先结束当前录音，再开始通话</string>
+    <string name="call_notification_channel">EarCEO 通话</string>
+    <string name="call_notification_title">EarCEO 通话进行中</string>
+    <string name="call_notification_text">音频通过 LiveKit/WebRTC 传输</string>
     <string name="command_listening">命令：正在收集本轮 Final 句子</string>
     <string name="command_ready_for_review">命令：录音结束，请检查、编辑后显式提交</string>
     <string name="command_empty">本轮没有可提交的定稿文本</string>

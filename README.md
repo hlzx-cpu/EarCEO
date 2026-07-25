@@ -131,6 +131,7 @@ See:
 - [Development plan](docs/development-plan.md)
 - [Architecture and risk policy](docs/architecture.md)
 - [Android setup and device validation](docs/android-development.md)
+- [Android Core-Telecom + LiveKit development](docs/android-voip-development.md)
 - [Next-session handoff](docs/next-session-handoff.md)
 
 ## Repository layout
