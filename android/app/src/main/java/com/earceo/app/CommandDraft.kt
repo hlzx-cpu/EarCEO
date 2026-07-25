@@ -15,6 +15,7 @@ class CommandDraft {
         Review,
         Sending,
         Working,
+        Approval,
         Result,
     }
 
@@ -67,9 +68,17 @@ class CommandDraft {
         state = State.Working
     }
 
+    fun markWaitingApproval() {
+        state = State.Approval
+    }
+
     fun restoreActiveTurn(restoredTurnId: String, restoredState: State = State.Working) {
         require(restoredTurnId.isNotBlank())
-        require(restoredState == State.Sending || restoredState == State.Working)
+        require(
+            restoredState == State.Sending ||
+                restoredState == State.Working ||
+                restoredState == State.Approval,
+        )
         sentences.clear()
         turnId = restoredTurnId
         state = restoredState
@@ -98,5 +107,9 @@ class CommandDraft {
 
     fun text(): String = sentences.joinToString("\n")
 
-    fun isActive(): Boolean = state == State.Sending || state == State.Working
+    fun isActive(): Boolean {
+        return state == State.Sending ||
+            state == State.Working ||
+            state == State.Approval
+    }
 }

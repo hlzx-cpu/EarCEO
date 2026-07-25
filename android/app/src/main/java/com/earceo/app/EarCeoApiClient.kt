@@ -52,6 +52,7 @@ class EarCeoApiClient(
         @SerializedName("updated_at") val updatedAt: String?,
         val summary: String?,
         @SerializedName("files_changed") val filesChanged: List<String>?,
+        @SerializedName("approval_id") val approvalId: String?,
     ) {
         val isActive: Boolean
             get() = status in ActiveTurnState.ACTIVE_STATUSES
@@ -60,11 +61,52 @@ class EarCeoApiClient(
             get() = status in ActiveTurnState.TERMINAL_STATUSES
     }
 
+    data class SessionApproval(
+        @SerializedName("approval_id") val approvalId: String,
+        @SerializedName("session_id") val sessionId: String,
+        @SerializedName("turn_id") val turnId: String,
+        @SerializedName("risk_level") val riskLevel: String,
+        val title: String,
+        val summary: String,
+        val choices: List<String>,
+        val status: String,
+        @SerializedName("expires_at") val expiresAt: String,
+        val decision: String?,
+        @SerializedName("decided_at") val decidedAt: String?,
+    ) {
+        val isPending: Boolean
+            get() = status == "pending"
+
+        fun toRecoveryState(): ApprovalState {
+            return ApprovalState(
+                sessionId = sessionId,
+                turnId = turnId,
+                approvalId = approvalId,
+                riskLevel = riskLevel,
+                title = title,
+                summary = summary,
+                expiresAt = expiresAt,
+                canApprove = "approve" in choices,
+                canReject = "reject" in choices,
+                status = status,
+            )
+        }
+    }
+
     data class SessionStateResponse(
         @SerializedName("session_id") val sessionId: String,
         val status: String,
         @SerializedName("project_id") val projectId: String,
         val turns: List<SessionTurn>,
+        val approvals: List<SessionApproval>?,
+    )
+
+    data class ApprovalDecisionResponse(
+        @SerializedName("approval_id") val approvalId: String,
+        @SerializedName("turn_id") val turnId: String,
+        val status: String,
+        val decision: String?,
+        @SerializedName("turn_status") val turnStatus: String,
     )
 
     data class ApiFailure(
@@ -221,6 +263,26 @@ class EarCeoApiClient(
             path = "/v1/sessions/$sessionId/turns/$turnId/cancel",
             payload = emptyMap<String, String>(),
             responseType = TurnResponse::class.java,
+            callback = callback,
+        )
+    }
+
+    fun decideApproval(
+        sessionId: String,
+        approvalId: String,
+        decisionId: String,
+        decision: String,
+        callback: (Result<ApprovalDecisionResponse>) -> Unit,
+    ) {
+        val payload = mapOf(
+            "client_decision_id" to decisionId,
+            "decision" to decision,
+        )
+        executeJson(
+            path = "/v1/sessions/$sessionId/approvals/$approvalId",
+            payload = payload,
+            responseType = ApprovalDecisionResponse::class.java,
+            extraHeaders = mapOf("Idempotency-Key" to decisionId),
             callback = callback,
         )
     }

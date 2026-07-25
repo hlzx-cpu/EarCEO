@@ -74,6 +74,14 @@ class MainActivity : Activity() {
     private lateinit var submitButton: Button
     private lateinit var discardButton: Button
     private lateinit var cancelButton: Button
+    private lateinit var approvalCard: LinearLayout
+    private lateinit var approvalSection: TextView
+    private lateinit var approvalRisk: TextView
+    private lateinit var approvalTitle: TextView
+    private lateinit var approvalSummary: TextView
+    private lateinit var approvalExpiry: TextView
+    private lateinit var approveButton: Button
+    private lateinit var rejectButton: Button
 
     private val commandDraft = CommandDraft()
     private val audioFileExecutor = Executors.newSingleThreadExecutor()
@@ -87,6 +95,7 @@ class MainActivity : Activity() {
     private var eventSource: EventSource? = null
     private var streamGeneration = 0
     private var backendRecoveryInProgress = false
+    private var approvalDecisionInFlight = false
     private val reconnectPolicy = SseReconnectPolicy()
 
     private val apiClient: EarCeoApiClient by lazy {
@@ -107,6 +116,14 @@ class MainActivity : Activity() {
 
     private val activeTurnStore: ActiveTurnStore by lazy {
         ActiveTurnStore(
+            SharedPreferencesRecoveryPreferences(
+                getSharedPreferences("earceo-mobile", MODE_PRIVATE),
+            ),
+        )
+    }
+
+    private val approvalStore: ApprovalStore by lazy {
+        ApprovalStore(
             SharedPreferencesRecoveryPreferences(
                 getSharedPreferences("earceo-mobile", MODE_PRIVATE),
             ),
@@ -301,6 +318,37 @@ class MainActivity : Activity() {
         content.addView(submitButton.withMargins(top = 10))
         content.addView(discardButton)
         content.addView(cancelButton)
+
+        approvalCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(16), dp(16), dp(16))
+            setBackgroundColor(Color.WHITE)
+            visibility = View.GONE
+        }
+        approvalRisk = text("", 15f, Color.rgb(155, 83, 20), true)
+        approvalTitle = text("", 19f, Color.rgb(25, 37, 63), true)
+            .withMargins(top = 6)
+        approvalSummary = text("", 16f, Color.rgb(43, 57, 87), false)
+            .withMargins(top = 8)
+        approvalExpiry = text("", 14f, Color.rgb(100, 110, 130), false)
+            .withMargins(top = 8)
+        approveButton = actionButton(getString(R.string.approval_approve)) {
+            submitApprovalDecision("approve")
+        }
+        rejectButton = actionButton(getString(R.string.approval_reject)) {
+            submitApprovalDecision("reject")
+        }
+        approvalCard.addView(approvalRisk)
+        approvalCard.addView(approvalTitle)
+        approvalCard.addView(approvalSummary)
+        approvalCard.addView(approvalExpiry)
+        approvalCard.addView(approveButton.withMargins(top = 10))
+        approvalCard.addView(rejectButton)
+        approvalSection = sectionTitle(getString(R.string.approval_section)).apply {
+            visibility = View.GONE
+        }
+        content.addView(approvalSection)
+        content.addView(approvalCard)
 
         content.addView(sectionTitle(getString(R.string.backend_result)))
         backendResult = text(
@@ -777,14 +825,28 @@ class MainActivity : Activity() {
                 }
                 stored?.status in ActiveTurnState.ACTIVE_STATUSES -> {
                     currentSessionId = stored?.sessionId
-                    commandDraft.restoreActiveTurn(stored!!.turnId)
+                    val restoredState = if (stored?.status == "waiting_approval") {
+                        CommandDraft.State.Approval
+                    } else {
+                        CommandDraft.State.Working
+                    }
+                    commandDraft.restoreActiveTurn(stored!!.turnId, restoredState)
                     lastEventId = stored.lastEventId
+                    if (restoredState == CommandDraft.State.Approval) {
+                        approvalStore.load()
+                            ?.takeIf {
+                                it.sessionId == stored.sessionId &&
+                                    it.turnId == stored.turnId
+                            }
+                            ?.let(::renderApproval)
+                    }
                     backendStatus.text = getString(
                         R.string.backend_recovery_deferred_active,
                         code,
                     )
                 }
                 else -> {
+                    hideApproval(clearStore = true)
                     stored?.let {
                         currentSessionId = it.sessionId
                         commandDraft.restoreForRetry(it.turnId)
@@ -825,11 +887,45 @@ class MainActivity : Activity() {
                         lastEventId = lastEventId,
                     ),
                 )
-                commandDraft.restoreActiveTurn(activeTurn.turnId)
-                backendStatus.text = getString(
-                    R.string.backend_restored_active,
+                val waitingApproval = activeTurn.status == "waiting_approval"
+                commandDraft.restoreActiveTurn(
                     activeTurn.turnId,
+                    if (waitingApproval) {
+                        CommandDraft.State.Approval
+                    } else {
+                        CommandDraft.State.Working
+                    },
                 )
+                if (waitingApproval) {
+                    val serverApproval = session.approvals.orEmpty()
+                        .firstOrNull {
+                            it.isPending &&
+                                it.turnId == activeTurn.turnId &&
+                                (
+                                    activeTurn.approvalId == null ||
+                                        it.approvalId == activeTurn.approvalId
+                                    )
+                        }
+                    val restoredApproval = serverApproval
+                        ?.toRecoveryState()
+                        ?.let(approvalStore::mergeFromBackend)
+                        ?: approvalStore.load()?.takeIf {
+                            it.sessionId == session.sessionId &&
+                                it.turnId == activeTurn.turnId
+                        }
+                    if (restoredApproval != null) {
+                        renderApproval(restoredApproval)
+                    } else {
+                        hideApproval(clearStore = true)
+                    }
+                    backendStatus.text = getString(R.string.backend_waiting_approval)
+                } else {
+                    hideApproval(clearStore = true)
+                    backendStatus.text = getString(
+                        R.string.backend_restored_active,
+                        activeTurn.turnId,
+                    )
+                }
                 backendResult.text = getString(R.string.no_backend_result)
                 refreshButtons()
                 openEventStream(session.sessionId)
@@ -842,6 +938,7 @@ class MainActivity : Activity() {
                 )
             }
             applicableStored?.status in setOf("sending", "retry") -> {
+                hideApproval(clearStore = true)
                 lastEventId = applicableStored?.lastEventId
                 commandDraft.restoreForRetry(applicableStored!!.turnId)
                 activeTurnStore.save(applicableStored.copy(status = "retry"))
@@ -853,6 +950,7 @@ class MainActivity : Activity() {
                 if (applicableStored != null) {
                     activeTurnStore.clear()
                 }
+                hideApproval(clearStore = true)
                 backendStatus.text = getString(R.string.backend_ready, apiClient.projectId)
                 refreshButtons()
             }
@@ -873,7 +971,34 @@ class MainActivity : Activity() {
                             renderTerminalResult(turn.status, turn.summary)
                         } else if (fallbackStatus in ActiveTurnState.TERMINAL_STATUSES) {
                             renderTerminalResult(fallbackStatus, turn?.summary)
+                        } else if (turn?.status == "waiting_approval") {
+                            activeTurnStore.updateStatus("waiting_approval")
+                            commandDraft.markWaitingApproval()
+                            val serverApproval = session.approvals.orEmpty()
+                                .firstOrNull {
+                                    it.isPending &&
+                                        it.turnId == turnId &&
+                                        (
+                                            turn.approvalId == null ||
+                                                it.approvalId == turn.approvalId
+                                            )
+                                }
+                            val restoredApproval = serverApproval
+                                ?.toRecoveryState()
+                                ?.let(approvalStore::mergeFromBackend)
+                                ?: approvalStore.load()?.takeIf {
+                                    it.sessionId == sessionId && it.turnId == turnId
+                                }
+                            if (restoredApproval != null) {
+                                renderApproval(restoredApproval)
+                            } else {
+                                hideApproval(clearStore = true)
+                            }
+                            backendStatus.text = getString(R.string.backend_waiting_approval)
+                            openEventStream(sessionId)
+                            refreshButtons()
                         } else {
+                            hideApproval(clearStore = true)
                             activeTurnStore.updateStatus(turn?.status ?: fallbackStatus)
                             commandDraft.markWorking()
                             openEventStream(sessionId)
@@ -890,6 +1015,187 @@ class MainActivity : Activity() {
                 },
             )
         }
+    }
+
+    private fun renderApproval(approval: ApprovalState) {
+        approvalSection.visibility = View.VISIBLE
+        approvalCard.visibility = View.VISIBLE
+        approvalRisk.text = getString(
+            R.string.approval_risk,
+            approval.riskLevel,
+        )
+        approvalTitle.text = approval.title
+        approvalSummary.text = approval.summary
+        approvalExpiry.text = getString(
+            R.string.approval_expires,
+            approval.expiresAt,
+        )
+        refreshApprovalButtons()
+    }
+
+    private fun hideApproval(clearStore: Boolean) {
+        approvalDecisionInFlight = false
+        if (clearStore) {
+            approvalStore.clear()
+        }
+        if (::approvalCard.isInitialized) {
+            approvalCard.visibility = View.GONE
+            approvalSection.visibility = View.GONE
+        }
+    }
+
+    private fun refreshApprovalButtons() {
+        if (!::approveButton.isInitialized) return
+        val approval = approvalStore.load()
+        val pendingDecision = approval?.pendingDecision
+        approveButton.visibility = if (approval?.canApprove == true) {
+            View.VISIBLE
+        } else {
+            View.GONE
+        }
+        rejectButton.visibility = if (approval?.canReject == true) {
+            View.VISIBLE
+        } else {
+            View.GONE
+        }
+        approveButton.isEnabled =
+            approval?.status == "pending" &&
+            !approvalDecisionInFlight &&
+            (pendingDecision == null || pendingDecision == "approve")
+        rejectButton.isEnabled =
+            approval?.status == "pending" &&
+            !approvalDecisionInFlight &&
+            (pendingDecision == null || pendingDecision == "reject")
+    }
+
+    private fun approvalFromEvent(
+        event: EarCeoApiClient.MobileEvent,
+    ): ApprovalState? {
+        val turnId = event.turnId ?: return null
+        val data = event.data
+        val choices = data.getAsJsonArray("choices")
+            ?.mapNotNull { choice -> choice.takeIf { it.isJsonPrimitive }?.asString }
+            .orEmpty()
+        val approvalId = data.get("approval_id")?.asString.orEmpty()
+        val riskLevel = data.get("risk_level")?.asString.orEmpty()
+        if (
+            approvalId.isBlank() ||
+            riskLevel !in setOf("R2", "R3") ||
+            choices.isEmpty()
+        ) {
+            return null
+        }
+        return ApprovalState(
+            sessionId = event.sessionId,
+            turnId = turnId,
+            approvalId = approvalId,
+            riskLevel = riskLevel,
+            title = data.get("title")?.asString.orEmpty(),
+            summary = data.get("summary")?.asString.orEmpty(),
+            expiresAt = data.get("expires_at")?.asString.orEmpty(),
+            canApprove = "approve" in choices,
+            canReject = "reject" in choices,
+            status = data.get("status")?.asString ?: "pending",
+        )
+    }
+
+    private fun submitApprovalDecision(decision: String) {
+        val approval = approvalStore.load()
+        if (approval == null || approval.status != "pending" || !approval.allows(decision)) {
+            toast(getString(R.string.approval_not_available))
+            return
+        }
+        val prepared = runCatching {
+            approvalStore.beginDecision(decision) {
+                "decision-${UUID.randomUUID()}"
+            }
+        }.getOrElse {
+            toast(getString(R.string.approval_different_decision_pending))
+            return
+        }
+        val decisionId = prepared.clientDecisionId ?: return
+        approvalDecisionInFlight = true
+        backendStatus.text = getString(
+            R.string.approval_sending,
+            if (decision == "approve") {
+                getString(R.string.approval_approve)
+            } else {
+                getString(R.string.approval_reject)
+            },
+        )
+        renderApproval(prepared)
+        apiClient.decideApproval(
+            sessionId = prepared.sessionId,
+            approvalId = prepared.approvalId,
+            decisionId = decisionId,
+            decision = decision,
+        ) { result ->
+            result.fold(
+                onSuccess = { response ->
+                    ui { handleApprovalDecisionSuccess(prepared, response) }
+                },
+                onFailure = { error ->
+                    val failure = (error as? EarCeoApiClient.ApiException)?.failure
+                    val code = failure?.code
+                        ?: error.javaClass.simpleName
+                    Log.w(TAG, "Approval decision failed: code=$code")
+                    ui {
+                        approvalDecisionInFlight = false
+                        if (failure?.retryable == false) {
+                            backendStatus.text = getString(
+                                R.string.approval_refreshing,
+                                code,
+                            )
+                            refreshTerminalTurn(
+                                prepared.sessionId,
+                                prepared.turnId,
+                                "waiting_approval",
+                            )
+                            return@ui
+                        }
+                        backendStatus.text = getString(
+                            R.string.approval_request_failed,
+                            code,
+                        )
+                        approvalStore.load()?.let(::renderApproval)
+                        refreshButtons()
+                    }
+                },
+            )
+        }
+    }
+
+    private fun handleApprovalDecisionSuccess(
+        approval: ApprovalState,
+        response: EarCeoApiClient.ApprovalDecisionResponse,
+    ) {
+        approvalDecisionInFlight = false
+        if (
+            response.approvalId != approval.approvalId ||
+            response.turnId != approval.turnId
+        ) {
+            backendStatus.text = getString(
+                R.string.approval_request_failed,
+                "INVALID_RESPONSE",
+            )
+            approvalStore.load()?.let(::renderApproval)
+            refreshButtons()
+            return
+        }
+        hideApproval(clearStore = true)
+        activeTurnStore.updateStatus(response.turnStatus)
+        if (response.turnStatus in ActiveTurnState.TERMINAL_STATUSES) {
+            refreshTerminalTurn(
+                approval.sessionId,
+                approval.turnId,
+                response.turnStatus,
+            )
+            return
+        }
+        commandDraft.markWorking()
+        backendStatus.text = getString(R.string.backend_command_accepted)
+        openEventStream(approval.sessionId)
+        refreshButtons()
     }
 
     private fun renderTerminalResult(
@@ -917,6 +1223,7 @@ class MainActivity : Activity() {
             }
         }
         closeEventStream()
+        hideApproval(clearStore = true)
         activeTurnStore.clearAfterTerminal(status)
         refreshButtons()
     }
@@ -935,6 +1242,7 @@ class MainActivity : Activity() {
         }
         commandDraft.discard()
         activeTurnStore.clear()
+        hideApproval(clearStore = true)
         closeEventStream()
         lastEventId = null
         lastEventSequence = 0
@@ -968,6 +1276,7 @@ class MainActivity : Activity() {
         commandDraft.replaceForReview(commandText)
         val turnId = commandDraft.ensureTurnId()
         commandDraft.markSending()
+        hideApproval(clearStore = true)
         backendStatus.text = getString(R.string.backend_creating_session)
         backendResult.text = getString(R.string.no_backend_result)
         refreshButtons()
@@ -1008,8 +1317,15 @@ class MainActivity : Activity() {
                     }
                     activeTurnStore.updateStatus(turn.status)
                     ui {
-                        commandDraft.markWorking()
-                        backendStatus.text = getString(R.string.backend_command_accepted)
+                        if (turn.status == "waiting_approval") {
+                            commandDraft.markWaitingApproval()
+                            backendStatus.text =
+                                getString(R.string.backend_waiting_approval)
+                        } else {
+                            commandDraft.markWorking()
+                            backendStatus.text =
+                                getString(R.string.backend_command_accepted)
+                        }
                         refreshButtons()
                     }
                     openEventStream(sessionId)
@@ -1089,11 +1405,56 @@ class MainActivity : Activity() {
     private fun handleBackendEvent(event: EarCeoApiClient.MobileEvent) {
         when (event.type) {
             "turn.accepted" -> {
-                activeTurnStore.updateStatus("accepted")
-                commandDraft.markWorking()
-                backendStatus.text = getString(R.string.backend_command_accepted)
+                val status = event.data.get("status")?.asString ?: "accepted"
+                activeTurnStore.updateStatus(status)
+                if (status == "waiting_approval") {
+                    commandDraft.markWaitingApproval()
+                    backendStatus.text = getString(R.string.backend_waiting_approval)
+                } else {
+                    hideApproval(clearStore = true)
+                    commandDraft.markWorking()
+                    backendStatus.text = getString(R.string.backend_command_accepted)
+                }
+            }
+            "approval.required" -> {
+                val approval = approvalFromEvent(event)
+                if (approval != null) {
+                    val persisted = approvalStore.mergeFromBackend(approval)
+                    activeTurnStore.updateStatus("waiting_approval")
+                    commandDraft.markWaitingApproval()
+                    renderApproval(persisted)
+                    backendStatus.text = getString(R.string.backend_waiting_approval)
+                } else {
+                    backendStatus.text = getString(
+                        R.string.backend_stream_stopped,
+                        "INVALID_APPROVAL_EVENT",
+                    )
+                }
+            }
+            "approval.resolved" -> {
+                val resolution = event.data.get("status")?.asString.orEmpty()
+                hideApproval(clearStore = true)
+                when (resolution) {
+                    "approved" -> {
+                        activeTurnStore.updateStatus("accepted")
+                        commandDraft.markWorking()
+                        backendStatus.text =
+                            getString(R.string.backend_command_accepted)
+                    }
+                    "rejected" -> refreshTerminalTurn(
+                        event.sessionId,
+                        event.turnId ?: return,
+                        "cancelled",
+                    )
+                    "expired" -> refreshTerminalTurn(
+                        event.sessionId,
+                        event.turnId ?: return,
+                        "failed",
+                    )
+                }
             }
             "task.progress" -> {
+                hideApproval(clearStore = true)
                 activeTurnStore.updateStatus("working")
                 commandDraft.markWorking()
                 val message = event.data.get("message")?.asString.orEmpty()
@@ -1267,6 +1628,7 @@ class MainActivity : Activity() {
             cancelButton.isEnabled = commandActive && currentSessionId != null
             transcriptText.isEnabled = !recording && !commandActive
         }
+        refreshApprovalButtons()
     }
 
     private fun actionButton(label: String, action: () -> Unit): Button {

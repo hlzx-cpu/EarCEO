@@ -121,10 +121,11 @@ Goal: prevent the CEO from treating voice as unrestricted authorization.
 
 Android tasks:
 
-- render an approval card with risk level and concise summary;
-- support explicit approve/reject;
-- require a screen tap for R2 initially;
-- never offer voice-only approval for R3.
+- [x] render an approval card with risk level and concise summary;
+- [x] support explicit approve/reject with a stable decision ID;
+- [x] require a screen tap for R2 initially;
+- [x] recover `waiting_approval` and safe public metadata after restart;
+- [x] never offer approve for R3 or any voice-only approval.
 
 Backend tasks:
 
@@ -200,7 +201,7 @@ Acceptance:
 - [x] reconcile accepted/working/terminal turns through session query
 - [x] bounded reconnect with exponential backoff and jitter
 - [x] backend approval persistence and decision contract
-- [ ] Android approval card
+- [x] Android approval card and restart recovery
 - [ ] Android TTS
 - [ ] half-duplex state machine
 - [ ] one-command offline queue
@@ -244,21 +245,19 @@ primary integration device.
 
 ## Next working session
 
-The restart-recovery/LAN milestone is complete. Preserve the verified baseline
-and do not begin HFP, PCM/WAV upload, backend ASR, Android TTS, production
-deployment or a UI overhaul without a newly agreed scope.
+The restart-recovery/LAN milestone and automated Android approval-card phase
+are complete. Preserve the verified baseline and do not begin HFP, PCM/WAV
+upload, backend ASR, Android TTS, production deployment or a UI overhaul
+without a newly agreed scope.
 
 When a follow-up product milestone is selected, the recommended order is:
 
-1. a minimal Android approval card against the completed backend contract,
-   without redesigning the diagnostic UI;
-2. restart recovery while a turn is `waiting_approval`;
-3. a bounded one-command offline queue;
+1. validate R2 approve/reject, R3 reject-only, expiry and force-stop recovery
+   on Huawei Mate 60 over the existing peer-capable hotspot;
+2. keep real-agent validation constrained to a disposable repository;
+3. a bounded one-command offline queue only as a separate phase;
 4. foreground-service and product-UI work only after the interaction contract
    is stable.
-
-Keep future real-agent testing constrained to explicitly allow-listed
-disposable repositories until approval controls are implemented.
 
 The detailed continuation brief and ready-to-copy prompt are in
 [`next-session-handoff.md`](next-session-handoff.md).

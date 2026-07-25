@@ -1,8 +1,8 @@
 # Android ↔ CEO API contract
 
-Status: **core MVP v1 implemented**. Sessions, turns, SSE, cancellation, and
-the backend approval state/decision contract are implemented. The Android
-approval card remains a separate phase.
+Status: **core MVP v1 implemented**. Sessions, turns, SSE, cancellation,
+backend approval decisions, and the minimal Android approval card/recovery
+path are implemented.
 
 This contract connects EarCEO Android to the in-repository `backend/` CEO
 Gateway. The Gateway reuses the durable Receptionist task core and adapter
@@ -108,7 +108,9 @@ its stable client session:
 3. render a matched terminal turn without resubmitting it;
 4. reconnect SSE from the persisted event ID;
 5. retain an uncertain pre-acceptance turn ID for a manual idempotent retry,
-   without persisting its transcript.
+   without persisting its transcript;
+6. when the matched turn is `waiting_approval`, restore its public approval
+   metadata and any stable in-flight client decision ID.
 
 ## Submit a command
 
@@ -244,8 +246,8 @@ EARCEO_APPROVAL_TTL_SECONDS=600
 Projects absent from the mapping, or mapped to R0/R1, use the existing
 automatic dispatch path. R2 turns are persisted as `waiting_approval`; no
 Receptionist task or adapter subprocess exists until approval. R3 turns also
-wait, but expose only `reject`. The mapping defaults to `{}`, so this phase does
-not change existing Android behavior until the Android approval card is ready.
+wait, but expose only `reject`. The mapping defaults to `{}`, so approval
+remains opt-in and the already validated automatic Android path is unchanged.
 
 Example event:
 
@@ -293,9 +295,11 @@ An expired approval becomes terminal `failed`, emits `approval.resolved` plus
 `task.failed`, and can never dispatch.
 
 R3 operations never expose an approve choice and an attempted mobile approval
-returns 403 `APPROVAL_NOT_ALLOWED`. This backend phase does not yet implement a
-mid-task adapter pause or the Android approval UI; those will reuse the same
-persisted approval and decision model.
+returns 403 `APPROVAL_NOT_ALLOWED`. Android persists only the approval ID,
+public risk/title/summary/expiry/choices, and a stable decision ID allocated
+before the request. It restores `waiting_approval` through session query and
+SSE without retaining the reviewed command. Action-specific mid-task adapter
+pauses remain deferred.
 
 ## Backend adapter boundary
 

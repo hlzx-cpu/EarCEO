@@ -18,7 +18,14 @@ data class ActiveTurnState(
         get() = status in TERMINAL_STATUSES
 
     companion object {
-        val ACTIVE_STATUSES = setOf("sending", "pending", "accepted", "running", "working")
+        val ACTIVE_STATUSES = setOf(
+            "sending",
+            "pending",
+            "accepted",
+            "running",
+            "working",
+            "waiting_approval",
+        )
         val TERMINAL_STATUSES = setOf("completed", "failed", "cancelled")
     }
 }

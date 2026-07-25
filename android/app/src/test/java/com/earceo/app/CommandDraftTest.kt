@@ -53,6 +53,21 @@ class CommandDraftTest {
     }
 
     @Test
+    fun waitingApprovalIsActiveAndRestoresWithoutTranscript() {
+        val recreated = CommandDraft()
+
+        recreated.restoreActiveTurn(
+            "turn-approval",
+            CommandDraft.State.Approval,
+        )
+
+        assertEquals("turn-approval", recreated.ensureTurnId())
+        assertEquals(CommandDraft.State.Approval, recreated.state)
+        assertEquals("", recreated.text())
+        assertTrue(recreated.isActive())
+    }
+
+    @Test
     fun uncertainSubmissionRestoresSameTurnIdForManualRetryWithoutTranscript() {
         val recreated = CommandDraft()
 
