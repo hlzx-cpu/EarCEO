@@ -1,7 +1,7 @@
 # EarCEO development plan
 
-This plan covers the product work after the verified headset → PCM/WAV →
-text-stream → Android pipeline.
+This plan covers the unified EarCEO monorepo after the verified headset →
+PCM/WAV → text-stream pipeline and the first Android/backend implementation.
 
 ## Immediate objective
 
@@ -18,9 +18,9 @@ iFLYBUDS command
 
 TTS, background operation and polished UI follow after this loop is reliable.
 
-## Ownership
+## Module ownership
 
-| Workstream | EarCEO / Android | coding-vibe / backend | Shared |
+| Workstream | `android/` | `backend/` | Shared |
 | --- | --- | --- | --- |
 | Headset, PCM, WAV, ASR | Own | — | Device testing |
 | Command aggregation/review | Own | — | UX language |
@@ -31,8 +31,8 @@ TTS, background operation and polished UI follow after this loop is reliable.
 | Approvals | UI and response | Policy and pause | Risk rules |
 | TTS | Own | Return `speak_text` | Voice wording |
 
-EarCEO must not copy `CodingVibeAgent`, MCP delegation state, or OpenOPC into
-Android. `coding-vibe` must not take over iFLYBUDS SDK integration.
+Backend orchestration stays out of the APK, while vendor headset code stays out
+of the backend process. Both modules share only the versioned API contract.
 
 ## Milestone 1 — Contract and command draft
 
@@ -179,15 +179,16 @@ Acceptance:
 
 ## Prioritized backlog
 
-### P0 — required for the next demo
+### P0 — implemented in code; real-device integration remains
 
-- [ ] Freeze API v0.1 with the backend owner
-- [ ] Aggregate Final sentences into a command draft
-- [ ] Add explicit Submit/Discard
-- [ ] Implement session and turn POSTs
-- [ ] Implement minimal CEO Gateway
-- [ ] Show accepted, working, completed and failed
-- [ ] Verify idempotent retry
+- [x] Freeze API v1 in the monorepo
+- [x] Aggregate Final sentences into a command draft
+- [x] Add explicit Submit/Discard/Cancel
+- [x] Implement session and turn POSTs
+- [x] Implement minimal CEO Gateway
+- [x] Show accepted, working, completed and failed
+- [x] Verify idempotent retry in automated tests
+- [ ] Verify the full loop on Huawei Mate 60 over LAN
 
 ### P1 — required for a credible product demo
 

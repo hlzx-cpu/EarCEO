@@ -9,11 +9,13 @@ import android.content.pm.PackageManager
 import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
+import android.text.InputType
 import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -37,10 +39,12 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.UUID
 import java.util.concurrent.Executors
+import okhttp3.sse.EventSource
 
 /**
- * EarCEO Android hardware probe.
+ * EarCEO Android headset and CEO command client.
  *
  * This activity deliberately keeps the vendor integration separate from the
  * backend agent system. It verifies, in order:
@@ -59,19 +63,43 @@ class MainActivity : Activity() {
     private lateinit var headsetStatus: TextView
     private lateinit var pcmStatus: TextView
     private lateinit var recordingFileStatus: TextView
+    private lateinit var backendStatus: TextView
+    private lateinit var backendResult: TextView
     private lateinit var partialText: TextView
-    private lateinit var transcriptText: TextView
+    private lateinit var transcriptText: EditText
     private lateinit var initializeButton: Button
     private lateinit var connectButton: Button
     private lateinit var recordButton: Button
     private lateinit var exportRecordingButton: Button
+    private lateinit var submitButton: Button
+    private lateinit var discardButton: Button
+    private lateinit var cancelButton: Button
 
-    private val transcript = StringBuilder()
+    private val commandDraft = CommandDraft()
     private val audioFileExecutor = Executors.newSingleThreadExecutor()
     private var pendingAfterPermission: (() -> Unit)? = null
     private var activeWavRecorder: WavRecorder? = null
     private var latestWavFile: File? = null
     private var pendingExportFile: File? = null
+    private var currentSessionId: String? = null
+    private var lastEventId: String? = null
+    private var eventSource: EventSource? = null
+
+    private val apiClient: EarCeoApiClient by lazy {
+        EarCeoApiClient(
+            baseUrl = BuildConfig.EARCEO_BACKEND_URL,
+            token = BuildConfig.EARCEO_API_TOKEN,
+            projectId = BuildConfig.EARCEO_PROJECT_ID,
+        )
+    }
+
+    private val clientSessionId: String by lazy {
+        val preferences = getSharedPreferences("earceo-mobile", MODE_PRIVATE)
+        preferences.getString("client_session_id", null)
+            ?: "client-session-${UUID.randomUUID()}".also {
+                preferences.edit().putString("client_session_id", it).apply()
+            }
+    }
 
     @Volatile private var sdkReady = false
     @Volatile private var textStreamAvailable = false
@@ -106,6 +134,8 @@ class MainActivity : Activity() {
             VHOManager.release()
         }
         finishWavRecording(updateUi = false)
+        eventSource?.cancel()
+        apiClient.shutdown()
         audioFileExecutor.shutdown()
         super.onDestroy()
     }
@@ -195,11 +225,19 @@ class MainActivity : Activity() {
         headsetStatus = statusCard(getString(R.string.headset_disconnected))
         pcmStatus = statusCard(getString(R.string.pcm_waiting))
         recordingFileStatus = statusCard(getString(R.string.recording_file_waiting))
+        backendStatus = statusCard(
+            if (apiClient.configured) {
+                getString(R.string.backend_ready, BuildConfig.EARCEO_PROJECT_ID)
+            } else {
+                getString(R.string.backend_not_configured)
+            },
+        )
         content.addView(sdkStatus)
         content.addView(capabilityStatus)
         content.addView(headsetStatus)
         content.addView(pcmStatus)
         content.addView(recordingFileStatus)
+        content.addView(backendStatus)
 
         initializeButton = actionButton(getString(R.string.initialize_sdk)) { initializeSdk() }
         connectButton = actionButton(getString(R.string.connect_headset)) { connectHeadset() }
@@ -211,7 +249,6 @@ class MainActivity : Activity() {
         content.addView(connectButton)
         content.addView(recordButton)
         content.addView(exportRecordingButton)
-        content.addView(actionButton(getString(R.string.clear_transcript)) { clearTranscript() })
 
         content.addView(sectionTitle(getString(R.string.live_partial)))
         partialText = text(getString(R.string.no_partial_result), 18f, Color.rgb(68, 83, 118), false)
@@ -226,10 +263,18 @@ class MainActivity : Activity() {
         )
 
         content.addView(sectionTitle(getString(R.string.final_transcript)))
-        transcriptText = text(getString(R.string.no_final_result), 18f, Color.rgb(25, 37, 63), false)
-            .withPadding(16)
-        transcriptText.setBackgroundColor(Color.WHITE)
-        transcriptText.gravity = Gravity.TOP
+        transcriptText = EditText(this).apply {
+            hint = getString(R.string.no_final_result)
+            textSize = 18f
+            setTextColor(Color.rgb(25, 37, 63))
+            setHintTextColor(Color.rgb(120, 130, 150))
+            setPadding(dp(16), dp(16), dp(16), dp(16))
+            setBackgroundColor(Color.WHITE)
+            gravity = Gravity.TOP
+            inputType = InputType.TYPE_CLASS_TEXT or
+                InputType.TYPE_TEXT_FLAG_MULTI_LINE or
+                InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+        }
         content.addView(
             transcriptText,
             LinearLayout.LayoutParams(
@@ -237,6 +282,22 @@ class MainActivity : Activity() {
                 dp(220),
             ),
         )
+        submitButton = actionButton(getString(R.string.submit_command)) { submitCommand() }
+        discardButton = actionButton(getString(R.string.discard_command)) { clearTranscript() }
+        cancelButton = actionButton(getString(R.string.cancel_command)) { cancelCommand() }
+        content.addView(submitButton.withMargins(top = 10))
+        content.addView(discardButton)
+        content.addView(cancelButton)
+
+        content.addView(sectionTitle(getString(R.string.backend_result)))
+        backendResult = text(
+            getString(R.string.no_backend_result),
+            16f,
+            Color.rgb(43, 57, 87),
+            false,
+        ).withPadding(16)
+        backendResult.setBackgroundColor(Color.WHITE)
+        content.addView(backendResult)
         return scroll
     }
 
@@ -480,6 +541,20 @@ class MainActivity : Activity() {
     }
 
     private fun startRecording() {
+        if (commandDraft.isActive()) {
+            toast(getString(R.string.command_in_progress))
+            return
+        }
+        if (commandDraft.state == CommandDraft.State.Review &&
+            transcriptText.text.toString().isNotBlank()
+        ) {
+            toast(getString(R.string.review_before_new_recording))
+            return
+        }
+        commandDraft.startListening()
+        transcriptText.setText("")
+        backendResult.text = getString(R.string.no_backend_result)
+        backendStatus.text = getString(R.string.command_listening)
         pcmFrames = 0
         pcmBytes = 0
         pcmStatus.text = getString(R.string.pcm_listening)
@@ -571,6 +646,12 @@ class MainActivity : Activity() {
         partialText.text = getString(R.string.no_partial_result)
         recordButton.text = getString(R.string.start_recording)
         sdkStatus.text = getString(R.string.recording_stopped)
+        val draft = commandDraft.finishListening()
+        backendStatus.text = if (draft.isBlank()) {
+            getString(R.string.command_empty)
+        } else {
+            getString(R.string.command_ready_for_review)
+        }
         refreshButtons()
     }
 
@@ -584,6 +665,12 @@ class MainActivity : Activity() {
         pcmStatus.text = getString(R.string.pcm_error, code, message.orEmpty())
         sdkStatus.text = getString(R.string.recording_stopped_after_error)
         recordButton.text = getString(R.string.start_recording)
+        val draft = commandDraft.finishListening()
+        backendStatus.text = if (draft.isBlank()) {
+            getString(R.string.command_empty)
+        } else {
+            getString(R.string.command_ready_for_review)
+        }
         refreshButtons()
     }
 
@@ -602,10 +689,9 @@ class MainActivity : Activity() {
                 when (result.type) {
                     VHOTextStreamResultType.Partial -> partialText.text = result.text
                     VHOTextStreamResultType.Final -> {
-                        if (result.text.isNotBlank()) {
-                            if (transcript.isNotEmpty()) transcript.append('\n')
-                            transcript.append(result.text)
-                            transcriptText.text = transcript.toString()
+                        if (commandDraft.appendFinal(result.text)) {
+                            transcriptText.setText(commandDraft.text())
+                            transcriptText.setSelection(transcriptText.text.length)
                         }
                         partialText.text = getString(R.string.no_partial_result)
                     }
@@ -642,9 +728,183 @@ class MainActivity : Activity() {
     }
 
     private fun clearTranscript() {
-        transcript.clear()
+        if (commandDraft.isActive()) {
+            toast(getString(R.string.cancel_active_command_first))
+            return
+        }
+        commandDraft.discard()
+        eventSource?.cancel()
+        eventSource = null
+        lastEventId = null
         partialText.text = getString(R.string.no_partial_result)
-        transcriptText.text = getString(R.string.no_final_result)
+        transcriptText.setText("")
+        backendStatus.text = if (apiClient.configured) {
+            getString(R.string.backend_ready, apiClient.projectId)
+        } else {
+            getString(R.string.backend_not_configured)
+        }
+        backendResult.text = getString(R.string.no_backend_result)
+        refreshButtons()
+    }
+
+    private fun submitCommand() {
+        if (recording) {
+            toast(getString(R.string.stop_before_submit))
+            return
+        }
+        if (!apiClient.configured) {
+            toast(getString(R.string.backend_not_configured))
+            return
+        }
+        if (commandDraft.isActive()) return
+
+        val commandText = transcriptText.text.toString().trim()
+        if (commandText.isBlank()) {
+            toast(getString(R.string.command_empty))
+            return
+        }
+        commandDraft.replaceForReview(commandText)
+        val turnId = commandDraft.ensureTurnId()
+        commandDraft.markSending()
+        backendStatus.text = getString(R.string.backend_creating_session)
+        backendResult.text = getString(R.string.no_backend_result)
+        refreshButtons()
+
+        apiClient.createOrResumeSession(clientSessionId) { sessionResult ->
+            sessionResult.fold(
+                onSuccess = { session ->
+                    currentSessionId = session.sessionId
+                    submitTurn(session.sessionId, turnId, commandText)
+                },
+                onFailure = ::handleBackendFailure,
+            )
+        }
+    }
+
+    private fun submitTurn(sessionId: String, turnId: String, commandText: String) {
+        ui { backendStatus.text = getString(R.string.backend_sending_command) }
+        apiClient.submitTurn(
+            sessionId = sessionId,
+            turnId = turnId,
+            commandText = commandText,
+            wavCaptured = latestWavFile?.isFile == true,
+        ) { turnResult ->
+            turnResult.fold(
+                onSuccess = {
+                    ui {
+                        commandDraft.markWorking()
+                        backendStatus.text = getString(R.string.backend_command_accepted)
+                        refreshButtons()
+                    }
+                    openEventStream(sessionId)
+                },
+                onFailure = ::handleBackendFailure,
+            )
+        }
+    }
+
+    private fun openEventStream(sessionId: String) {
+        eventSource?.cancel()
+        eventSource = apiClient.streamEvents(
+            sessionId = sessionId,
+            lastEventId = lastEventId,
+            onEvent = { event ->
+                lastEventId = event.eventId
+                ui { handleBackendEvent(event) }
+            },
+            onFailure = { failure ->
+                ui {
+                    if (commandDraft.isActive()) {
+                        backendStatus.text = getString(
+                            R.string.backend_reconnecting,
+                            failure.code,
+                        )
+                        window.decorView.postDelayed(
+                            {
+                                if (commandDraft.isActive() && !isFinishing) {
+                                    openEventStream(sessionId)
+                                }
+                            },
+                            SSE_RECONNECT_DELAY_MS,
+                        )
+                    }
+                }
+            },
+        )
+    }
+
+    private fun handleBackendEvent(event: EarCeoApiClient.MobileEvent) {
+        when (event.type) {
+            "turn.accepted" -> {
+                commandDraft.markWorking()
+                backendStatus.text = getString(R.string.backend_command_accepted)
+            }
+            "task.progress" -> {
+                commandDraft.markWorking()
+                val message = event.data.get("message")?.asString.orEmpty()
+                val progress = event.data.get("progress_pct")?.asInt ?: 0
+                backendStatus.text = getString(
+                    R.string.backend_progress,
+                    progress,
+                    message,
+                )
+            }
+            "task.completed" -> {
+                commandDraft.markResult()
+                backendStatus.text = getString(R.string.backend_completed)
+                backendResult.text = event.data.get("summary")?.asString
+                    ?: getString(R.string.backend_completed)
+                eventSource?.cancel()
+                eventSource = null
+            }
+            "task.failed" -> {
+                commandDraft.markResult()
+                backendStatus.text = getString(
+                    R.string.backend_failed,
+                    event.data.get("code")?.asString ?: "UNKNOWN",
+                )
+                backendResult.text = event.data.get("message")?.asString
+                    ?: getString(R.string.backend_failed_generic)
+                eventSource?.cancel()
+                eventSource = null
+            }
+        }
+        refreshButtons()
+    }
+
+    private fun handleBackendFailure(error: Throwable) {
+        val code = (error as? EarCeoApiClient.ApiException)?.failure?.code
+            ?: error.javaClass.simpleName
+        Log.w(TAG, "Backend request failed: code=$code")
+        ui {
+            commandDraft.returnToReview()
+            backendStatus.text = getString(R.string.backend_request_failed, code)
+            refreshButtons()
+        }
+    }
+
+    private fun cancelCommand() {
+        val sessionId = currentSessionId
+        val turnId = commandDraft.turnId
+        if (sessionId == null || turnId == null || !commandDraft.isActive()) {
+            toast(getString(R.string.no_active_command))
+            return
+        }
+        cancelButton.isEnabled = false
+        apiClient.cancelTurn(sessionId, turnId) { result ->
+            result.fold(
+                onSuccess = {
+                    ui {
+                        commandDraft.markResult()
+                        backendStatus.text = getString(R.string.backend_cancelled)
+                        eventSource?.cancel()
+                        eventSource = null
+                        refreshButtons()
+                    }
+                },
+                onFailure = ::handleBackendFailure,
+            )
+        }
     }
 
     private fun startWavRecording() {
@@ -741,11 +1001,21 @@ class MainActivity : Activity() {
     }
 
     private fun refreshButtons() {
-        initializeButton.isEnabled = !recording
-        connectButton.isEnabled = sdkReady && !recording
-        recordButton.isEnabled = (headsetReady || VHOManager.isConnectSPP()) && !wavFinalizing
+        val commandActive = commandDraft.isActive()
+        initializeButton.isEnabled = !recording && !commandActive
+        connectButton.isEnabled = sdkReady && !recording && !commandActive
+        recordButton.isEnabled =
+            (headsetReady || VHOManager.isConnectSPP()) &&
+            !wavFinalizing &&
+            !commandActive
         exportRecordingButton.isEnabled =
             latestWavFile?.isFile == true && !recording && !wavFinalizing
+        if (::submitButton.isInitialized) {
+            submitButton.isEnabled = apiClient.configured && !recording && !commandActive
+            discardButton.isEnabled = !recording && !commandActive
+            cancelButton.isEnabled = commandActive && currentSessionId != null
+            transcriptText.isEnabled = !recording && !commandActive
+        }
     }
 
     private fun actionButton(label: String, action: () -> Unit): Button {
@@ -817,5 +1087,6 @@ class MainActivity : Activity() {
         private const val REQUEST_EXPORT_WAV = 1003
         private const val PCM_UI_UPDATE_INTERVAL = 25L
         private const val WAV_HEADER_BYTES = 44L
+        private const val SSE_RECONNECT_DELAY_MS = 2_000L
     }
 }

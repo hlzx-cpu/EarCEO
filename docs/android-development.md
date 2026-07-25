@@ -68,9 +68,14 @@ Set `sdk.dir` to the Android SDK path. For compilation, SPP connection and PCM-o
 sdk.dir=/Users/your-name/Library/Android/sdk
 viaim.appKey=
 viaim.appSecret=
+earceo.backendUrl=http://192.168.1.100:8787
+earceo.apiToken=<development-token>
+earceo.projectId=adventurex-demo
 ```
 
 `local.properties` is ignored by Git. The current AppSecret path is for local competition testing only; a production build must use `ClientToken` or `Signed` credentials issued through a trusted backend.
+The backend token is also development-only and is compiled into the debug APK;
+production must use an issued short-lived device token.
 
 ## Check `text-stream` authorization
 
@@ -100,9 +105,7 @@ permission is confirmed.
 ## Build and validate
 
 ```bash
-cd android
-./gradlew :app:assembleDebug :app:lintDebug
-../scripts/check-public-repo.sh
+./scripts/test-all.sh
 ```
 
 ## OnePlus / ColorOS real-device test

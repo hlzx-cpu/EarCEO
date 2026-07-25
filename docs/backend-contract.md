@@ -1,11 +1,11 @@
 # Android ↔ CEO API contract
 
-Status: **proposed MVP v0.1**
+Status: **core MVP v1 implemented** (sessions, turns, SSE and cancellation).
+Approval events remain a planned extension.
 
-This contract connects EarCEO Android to the existing
-[`coding-vibe`](https://github.com/onezion12344/coding-vibe) CEO and agent
-orchestration. It does not replace `CodingVibeAgent`, the MCP delegation tools,
-or OpenOPC.
+This contract connects EarCEO Android to the in-repository `backend/` CEO
+Gateway. The Gateway reuses the durable Receptionist task core and adapter
+boundary derived from `coding-vibe`.
 
 ## Design decisions
 
@@ -107,6 +107,15 @@ Accepted response:
 
 The response only confirms durable acceptance. CEO reasoning and agent work are
 reported through the event stream.
+
+## Cancel a command
+
+```http
+POST /v1/sessions/{session_id}/turns/{turn_id}/cancel
+```
+
+Cancellation is best-effort and succeeds only while the current backend
+process owns the live adapter.
 
 ## Event stream
 
@@ -211,7 +220,7 @@ R3 operations must not offer an `approve` action through voice alone.
 
 ## Backend adapter boundary
 
-The CEO Gateway belongs with `coding-vibe`. Its responsibilities are:
+The CEO Gateway lives at `backend/web/mobile_api.py`. Its responsibilities are:
 
 1. authenticate the Android client;
 2. map `project_id` to a server-side allow-listed repository;

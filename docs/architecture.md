@@ -22,7 +22,7 @@ flowchart TB
         Client --> UI --> TTS
     end
 
-    subgraph Backend["coding-vibe backend"]
+    subgraph Backend["EarCEO backend"]
         Gateway["CEO Gateway"]
         CEO["CodingVibeAgent / CEO service"]
         MCP["MCP checkpoint + delegation"]
@@ -37,9 +37,9 @@ flowchart TB
     Gateway -->|SSE events| Client
 ```
 
-The Android repository owns the phone-side component. The
-[`coding-vibe`](https://github.com/onezion12344/coding-vibe) repository owns the
-backend-side component.
+Both runtime components live in this repository. `android/` owns device and
+human-interface state; `backend/` owns accepted turns, durable task state,
+repository mapping and agent execution.
 
 ## Voice path
 
@@ -88,8 +88,8 @@ a new command.
 | Headset connection and recording | Android |
 | Active command draft | Android until accepted |
 | Accepted turn and idempotency | CEO Gateway |
-| Agent task and checkpoints | coding-vibe |
-| Approval status | CEO Gateway / coding-vibe |
+| Agent task and checkpoints | EarCEO backend |
+| Approval status | EarCEO Gateway / backend |
 | WAV recording | Android local storage |
 
 The API contract is defined in

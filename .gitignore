@@ -15,6 +15,13 @@ android/**/build/
 android/**/*.apk
 android/**/*.aab
 
+# Backend local runtime
+backend/.venv/
+backend/**/__pycache__/
+backend/.pytest_cache/
+backend/.state/
+backend/*.log
+
 # The viaim SDK is supplied separately for the competition and is not
 # redistributed from this public repository.
 android/app/libs/*.aar
