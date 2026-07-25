@@ -10,7 +10,7 @@ Updated: 2026-07-25
 - Baseline commit: `d571564`
 - Restart-recovery milestone commit: `60572b1`
 - Backend approval milestone commit: `f485d80`
-- Current development branch: `codex/android-approval-card`
+- Current development branch: `codex/audio-stream-uplink`
 - Development continues only in this monorepo.
 - The old `/Users/hanliangzhaoxuan/Developer/AdvX26/EarCEO-Backend`
   checkout is historical and must not receive new work.
@@ -191,17 +191,20 @@ All criteria for this milestone passed:
 
 ## Next objective
 
-Validate the completed approval path on Huawei Mate 60 without widening the
-implementation scope:
+Complete the physical-device media acceptance for the new Android call
+foundation without widening the implementation scope:
 
-1. temporarily enable an R2 policy only in ignored local configuration;
-2. verify approve dispatches exactly once and reject never dispatches;
-3. force-stop/reopen while `waiting_approval` and while one decision response
-   is uncertain, confirming the same approval and decision ID are reused;
-4. verify expiry becomes terminal and R3 renders reject only;
-5. return ignored local policy to `{}` after the mock-device test;
-6. if a real-agent gate is needed, use only a new disposable allow-listed
-   repository.
+1. put the Android phone and Mac on a LAN/VPN that permits direct WebRTC media,
+   or use a public disposable LiveKit deployment;
+2. confirm LiveKit reports one published microphone audio track with non-zero
+   packets;
+3. repeat with iFLYBUDS connected and confirm healthy Viaim PCM is preferred
+   over Android `AudioRecord`, then disconnect it and verify fallback;
+4. validate hold/end, endpoint switching, process/background behavior, and
+   LiveKit disconnect/reconnect propagation;
+5. move media/session ownership from `MainActivity` into
+   `EarCeoCallService`;
+6. keep approval-device acceptance as a separate follow-up.
 
 ## Explicitly deferred
 

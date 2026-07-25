@@ -28,7 +28,7 @@ class CallNotificationManager(private val context: Context) {
     }
 
     @SuppressLint("MissingPermission")
-    fun showOngoingCall() {
+    fun buildOngoingCall(): Notification {
         val openIntent = PendingIntent.getActivity(
             context,
             0,
@@ -73,7 +73,7 @@ class CallNotificationManager(private val context: Context) {
                 ).build(),
             )
         }
-        manager.notify(NOTIFICATION_ID, builder.build())
+        return builder.build()
     }
 
     fun cancel() {
@@ -82,7 +82,7 @@ class CallNotificationManager(private val context: Context) {
 
     companion object {
         const val ACTION_END_CALL = "com.earceo.app.action.END_CALL"
+        const val NOTIFICATION_ID = 2001
         private const val CHANNEL_ID = "earceo_calls"
-        private const val NOTIFICATION_ID = 2001
     }
 }

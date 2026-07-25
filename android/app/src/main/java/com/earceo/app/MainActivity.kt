@@ -40,6 +40,7 @@ import com.earceo.app.audio.Pcm16FrameBuffer
 import com.earceo.app.audio.ViaimAudioBufferCallback
 import com.earceo.app.call.CallNotificationManager
 import com.earceo.app.call.CallSessionCoordinator
+import com.earceo.app.call.EarCeoCallService
 import com.earceo.app.rtc.LiveKitCallTransport
 import com.earceo.app.rtc.LiveKitRoomCredentials
 import com.earceo.app.telecom.TelecomCallCoordinator
@@ -114,7 +115,6 @@ class MainActivity : Activity() {
     private val reconnectPolicy = SseReconnectPolicy()
     private val callScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val viaimCallAudioCallback = ViaimAudioBufferCallback(Pcm16FrameBuffer())
-    private val callNotificationManager by lazy { CallNotificationManager(applicationContext) }
     private var callSession: CallSessionCoordinator? = null
     @Volatile private var callViaimCaptureActive = false
     @Volatile private var callState = CallSessionCoordinator.State.IDLE
@@ -424,7 +424,10 @@ class MainActivity : Activity() {
                             getString(R.string.call_connecting_livekit)
                         CallSessionCoordinator.State.REGISTERING_TELECOM ->
                             getString(R.string.call_registering_telecom).also {
-                                callNotificationManager.showOngoingCall()
+                                startForegroundService(
+                                    Intent(this, EarCeoCallService::class.java)
+                                        .setAction(EarCeoCallService.ACTION_START),
+                                )
                             }
                         CallSessionCoordinator.State.ACTIVE -> getString(R.string.call_active)
                         CallSessionCoordinator.State.HELD -> getString(R.string.call_held)
@@ -435,7 +438,7 @@ class MainActivity : Activity() {
                         state == CallSessionCoordinator.State.IDLE ||
                         state == CallSessionCoordinator.State.FAILED
                     ) {
-                        callNotificationManager.cancel()
+                        stopService(Intent(this, EarCeoCallService::class.java))
                         stopViaimCallCapture()
                     }
                     refreshButtons()
